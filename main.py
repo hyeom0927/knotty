@@ -297,6 +297,16 @@ async def generate_pattern(req: PatternRequest):
             if creator_res.data and len(creator_res.data) > 0:
                 creator_id = creator_res.data[0]["id"]
 
+        # 💡 자막과 설명란이 모두 없으면 AI 환각 방지를 위해 즉시 예외 처리
+        has_no_transcript = not transcript or "자막을 가져올 수 없습니다" in transcript
+        has_no_description = not meta_info.get("description", "").strip()
+
+        if has_no_transcript and has_no_description:
+            raise HTTPException(
+                status_code=400, 
+                detail="해당 영상은 자막과 상세설명이 제공되지 않아 도안을 자동으로 추출할 수 없습니다."
+            )
+        
         # 3. AI Pass 1 & Pass 2 실행
         print("⏳ Pass 1 실행 중...")
         intermediate_json_str = await asyncio.to_thread(call_gemini_pass1_sync, meta_info, transcript)
