@@ -16,12 +16,13 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from prompts import PASS1_EXTRACTOR_PROMPT, PASS2_REFINER_PROMPT, build_user_prompt
 
 # ==========================================
-# 1. 설정 및 클라이언트 초기화
+# 1. 설정 및 클라이언트 초기화 (Render 환경변수)
 # ==========================================
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6Kh3NU4tQabkRwWUtSpvRm0Y2we42mWASHvej8dK3J29g")
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://txnyogjhdxiwjlvbyece.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_UOpUgcKtcmAIvCmt2a3LjA_njD1lJrw")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -87,7 +88,7 @@ def clean_pattern_text(text: str) -> str:
         r"\(\s*does\s+not\s+count\s+as\s+(?:a\s+)?st(?:itch)?\s*\)",
         r"\(\s*코로\s*세지\s*않음\s*\)",
         r"\(\s*코수\s*포함\s*X\s*\)",
-        r"\(\s*코수에?\s*포함하지?\s*않음\_*\)",
+        r"\(\s*코수에?\s*포함하지?\s*않음\s*\)",
     ]
     
     cleaned = text
@@ -145,60 +146,12 @@ def get_matching_craft_terms(pattern_data: dict) -> list:
         print(f"⚠️ craft_terms DB 연동 실패: {e}")
         return []
 
-def extract_captions_from_html(html_content: str) -> str:
-    """[Fallback] YouTube HTML 내 captionTracks 추출 및 XML 직접 수집"""
-    try:
-        match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
-        if not match:
-            return ""
-
-        tracks = json.loads(match.group(1))
-        if not tracks:
-            return ""
-
-        target_track = None
-        for track in tracks:
-            lang = track.get("languageCode", "")
-            if lang in ["ko", "en"]:
-                target_track = track
-                if lang == "ko":
-                    break
-        if not target_track:
-            target_track = tracks[0]
-
-        base_url = target_track.get("baseUrl")
-        if not base_url:
-            return ""
-
-        req = urllib.request.Request(
-            base_url,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
-        )
-        with urllib.request.urlopen(req) as resp:
-            xml_data = resp.read().decode('utf-8', errors='ignore')
-
-        lines = []
-        for text_match in re.finditer(r'<text start="([\d\.]+)"[^>]*>(.*?)</text>', xml_data):
-            start_sec = int(float(text_match.group(1)))
-            raw_text = text_match.group(2)
-            raw_text = urllib.parse.unquote(raw_text)
-            clean_text = raw_text.replace('&amp;', '&').replace('&#39;', "'").replace('&quot;', '"').replace('&lt;', '<').replace('&gt;', '>')
-            clean_text = re.sub(r'<[^>]+>', '', clean_text).strip()
-            if clean_text:
-                lines.append(f"[{start_sec}s] {clean_text}")
-
-        return "\n".join(lines)
-    except Exception as e:
-        print(f"⚠️ HTML 자막 추출 예외: {e}")
-        return ""
-
 def get_youtube_data_sync(url: str, video_id: str):
-    """유튜브 페이지 직접 파싱 및 2단계 자막 수집 (1차 API / 2차 HTML 파싱)"""
+    """유튜브 메타데이터 수집 및 Supadata API 기반 자막 수집"""
     title, description, channel_name, channel_url = "", "", "", ""
     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-    html_content = ""
 
-    # 1. HTML 요청을 통해 메타데이터 수집
+    # 1. 페이지 직접 파싱을 통한 메타데이터 추출
     try:
         req = urllib.request.Request(
             f"https://www.youtube.com/watch?v={video_id}",
@@ -208,39 +161,59 @@ def get_youtube_data_sync(url: str, video_id: str):
             }
         )
         with urllib.request.urlopen(req) as response:
-            html_content = response.read().decode('utf-8', errors='ignore')
-            
-            desc_match = re.search(r'"shortDescription":"([^"]*)"', html_content)
+            html = response.read().decode('utf-8', errors='ignore')
+            desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
             if desc_match:
                 raw_desc = desc_match.group(1).replace(r'\n', '\n')
                 description = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_desc)
-            
-            title_match = re.search(r'"title":"([^"]*)"', html_content)
+            title_match = re.search(r'"title":"([^"]*)"', html)
             if title_match:
                 raw_title = title_match.group(1)
                 title = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_title)
-                
-            channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html_content)
+            channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
             if channel_match:
                 channel_name = channel_match.group(1)
     except Exception as e:
         print(f"⚠️ 페이지 파싱 경고: {e}")
 
-    # 2. 자막 수집 1차 시도 (YouTubeTranscriptApi)
+    # 2. Supadata API 호출 (Render 유튜브 IP 차단 우회)
     transcript_text = ""
-    try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
-        formatted_list = [f"[{int(item['start'])}s] {item['text']}" for item in transcript_list]
-        transcript_text = "\n".join(formatted_list)
-        print(f"✅ [Primary Success] 자막 수집 성공! ({len(formatted_list)}개 문장)")
-    except Exception as e:
-        print(f"⚠️ [Primary Failed] YouTubeTranscriptApi 차단: {e}")
-        # 3. 자막 수집 2차 시도 (HTML 파싱 Fallback)
-        if html_content:
-            fallback_text = extract_captions_from_html(html_content)
-            if fallback_text:
-                transcript_text = fallback_text
-                print(f"✅ [Fallback Success] HTML 자막 추출 성공!")
+    supadata_key = os.getenv("SUPADATA_API_KEY", "").strip()
+
+    if supadata_key:
+        try:
+            encoded_url = urllib.parse.quote(f"https://www.youtube.com/watch?v={video_id}")
+            sd_url = f"https://api.supadata.ai/v1/youtube/transcript?url={encoded_url}"
+            sd_req = urllib.request.Request(
+                sd_url, 
+                headers={"x-api-key": supadata_key}
+            )
+            with urllib.request.urlopen(sd_req) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                content = data.get("content", [])
+                if isinstance(content, list):
+                    lines = [f"[{int(item.get('offset', 0)/1000)}s] {item.get('text', '')}" for item in content]
+                    transcript_text = "\n".join(lines)
+                elif isinstance(content, str):
+                    transcript_text = content
+                print(f"✅ Supadata 자막 수집 성공! ({len(transcript_text)}자)")
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode('utf-8', errors='ignore')
+            print(f"❌ Supadata HTTP 에러 ({e.code}): {err_msg}")
+        except Exception as e:
+            print(f"❌ Supadata 호출 예외: {e}")
+    else:
+        print("⚠️ SUPADATA_API_KEY 환경변수가 설정되지 않았습니다.")
+
+    # 3. Supadata 미설정/실패 시 Fallback (로컬 전용)
+    if not transcript_text:
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
+            formatted_list = [f"[{int(item['start'])}s] {item['text']}" for item in transcript_list]
+            transcript_text = "\n".join(formatted_list)
+            print(f"✅ [Fallback] YouTubeTranscriptApi 성공")
+        except Exception as e:
+            print(f"❌ YouTubeTranscriptApi 실패 (Render IP 차단): {e}")
 
     meta_info = {
         "title": title or "유튜브 뜨개질 영상",
@@ -347,11 +320,11 @@ async def generate_pattern(req: PatternRequest):
             if creator_res.data and len(creator_res.data) > 0:
                 creator_id = creator_res.data[0]["id"]
 
-        # 💡 자막 수집 실패 시 부실한 10단 요약본이 생성되는 것을 방지하기 위한 예외 처리
-        if not transcript.strip():
+        # 💡 자막 수집 실패 시 부실 요약본 생성을 방지하기 위한 예외 처리
+        if not transcript or not transcript.strip():
             raise HTTPException(
                 status_code=400, 
-                detail="해당 영상의 자막 추출에 실패하였습니다. 영상 자막(CC) 지원 여부를 확인해주세요."
+                detail="유튜브 자막 수집에 실패했습니다. Render 대시보드의 SUPADATA_API_KEY 설정 및 자막 제공 여부를 확인해주세요."
             )
         
         # 3. AI Pass 1 & Pass 2 실행
