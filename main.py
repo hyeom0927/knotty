@@ -4,6 +4,7 @@ import json
 import time
 import asyncio
 import urllib.request
+import urllib.parse
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,7 +22,6 @@ from prompts import PASS1_EXTRACTOR_PROMPT, PASS2_REFINER_PROMPT, build_user_pro
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6Kh3NU4tQabkRwWUtSpvRm0Y2we42mWASHvej8dK3J29g")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://txnyogjhdxiwjlvbyece.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_UOpUgcKtcmAIvCmt2a3LjA_njD1lJrw")
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "AIzaSyDaoklTD2ucatMkruE1w5gQOFSfuUmMq8M")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -87,7 +87,7 @@ def clean_pattern_text(text: str) -> str:
         r"\(\s*does\s+not\s+count\s+as\s+(?:a\s+)?st(?:itch)?\s*\)",
         r"\(\s*코로\s*세지\s*않음\s*\)",
         r"\(\s*코수\s*포함\s*X\s*\)",
-        r"\(\s*코수에?\s*포함하지?\s*않음\s*\)",
+        r"\(\s*코수에?\s*포함하지?\s*않음\_*\)",
     ]
     
     cleaned = text
@@ -145,73 +145,102 @@ def get_matching_craft_terms(pattern_data: dict) -> list:
         print(f"⚠️ craft_terms DB 연동 실패: {e}")
         return []
 
+def extract_captions_from_html(html_content: str) -> str:
+    """[Fallback] YouTube HTML 내 captionTracks 추출 및 XML 직접 수집"""
+    try:
+        match = re.search(r'"captionTracks":\s*(\[.*?\])', html_content)
+        if not match:
+            return ""
+
+        tracks = json.loads(match.group(1))
+        if not tracks:
+            return ""
+
+        target_track = None
+        for track in tracks:
+            lang = track.get("languageCode", "")
+            if lang in ["ko", "en"]:
+                target_track = track
+                if lang == "ko":
+                    break
+        if not target_track:
+            target_track = tracks[0]
+
+        base_url = target_track.get("baseUrl")
+        if not base_url:
+            return ""
+
+        req = urllib.request.Request(
+            base_url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req) as resp:
+            xml_data = resp.read().decode('utf-8', errors='ignore')
+
+        lines = []
+        for text_match in re.finditer(r'<text start="([\d\.]+)"[^>]*>(.*?)</text>', xml_data):
+            start_sec = int(float(text_match.group(1)))
+            raw_text = text_match.group(2)
+            raw_text = urllib.parse.unquote(raw_text)
+            clean_text = raw_text.replace('&amp;', '&').replace('&#39;', "'").replace('&quot;', '"').replace('&lt;', '<').replace('&gt;', '>')
+            clean_text = re.sub(r'<[^>]+>', '', clean_text).strip()
+            if clean_text:
+                lines.append(f"[{start_sec}s] {clean_text}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"⚠️ HTML 자막 추출 예외: {e}")
+        return ""
+
 def get_youtube_data_sync(url: str, video_id: str):
-    """구글 공식 YouTube Data API v3를 활용한 메타데이터 수집 및 자막 파싱"""
+    """유튜브 페이지 직접 파싱 및 2단계 자막 수집 (1차 API / 2차 HTML 파싱)"""
     title, description, channel_name, channel_url = "", "", "", ""
     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+    html_content = ""
 
-    # 1. Google YouTube Data API v3 호출
-    if YOUTUBE_API_KEY:
-        try:
-            api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video_id}&key={YOUTUBE_API_KEY}"
-            req = urllib.request.Request(api_url)
-            with urllib.request.urlopen(req) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode('utf-8'))
-                    if data.get('items'):
-                        snippet = data['items'][0]['snippet']
-                        title = snippet.get('title', '')
-                        description = snippet.get('description', '')
-                        channel_name = snippet.get('channelTitle', '')
-                        channel_id = snippet.get('channelId', '')
-                        if channel_id:
-                            channel_url = f"https://www.youtube.com/channel/{channel_id}"
-                        thumbnails = snippet.get('thumbnails', {})
-                        if 'high' in thumbnails:
-                            thumbnail_url = thumbnails['high']['url']
-                        print("✅ 구글 공식 YouTube API를 통해 메타데이터 수집 성공!")
-        except Exception as e:
-            print(f"⚠️ YouTube API 호출 실패: {e}")
+    # 1. HTML 요청을 통해 메타데이터 수집
+    try:
+        req = urllib.request.Request(
+            f"https://www.youtube.com/watch?v={video_id}",
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'ko-KR,ko;q=0.9'
+            }
+        )
+        with urllib.request.urlopen(req) as response:
+            html_content = response.read().decode('utf-8', errors='ignore')
+            
+            desc_match = re.search(r'"shortDescription":"([^"]*)"', html_content)
+            if desc_match:
+                raw_desc = desc_match.group(1).replace(r'\n', '\n')
+                description = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_desc)
+            
+            title_match = re.search(r'"title":"([^"]*)"', html_content)
+            if title_match:
+                raw_title = title_match.group(1)
+                title = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_title)
+                
+            channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html_content)
+            if channel_match:
+                channel_name = channel_match.group(1)
+    except Exception as e:
+        print(f"⚠️ 페이지 파싱 경고: {e}")
 
-    # 2. API 실패 시 웹 파싱 보완 (Fallback)
-    if not title or not description:
-        try:
-            req = urllib.request.Request(
-                f"https://www.youtube.com/watch?v={video_id}",
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept-Language': 'ko-KR,ko;q=0.9'
-                }
-            )
-            with urllib.request.urlopen(req) as response:
-                html = response.read().decode('utf-8', errors='ignore')
-                if not description:
-                    desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
-                    if desc_match:
-                        raw_desc = desc_match.group(1).replace(r'\n', '\n')
-                        description = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_desc)
-                if not title:
-                    title_match = re.search(r'"title":"([^"]*)"', html)
-                    if title_match:
-                        raw_title = title_match.group(1)
-                        title = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_title)
-                if not channel_name:
-                    channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
-                    if channel_match:
-                        channel_name = channel_match.group(1)
-        except Exception as e:
-            print(f"⚠️ 웹 페이지 파싱 보완 실패: {e}")
-
-    # 3. 자막 수집 시도
+    # 2. 자막 수집 1차 시도 (YouTubeTranscriptApi)
     transcript_text = ""
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
         formatted_list = [f"[{int(item['start'])}s] {item['text']}" for item in transcript_list]
         transcript_text = "\n".join(formatted_list)
-        print(f"✅ 자막 수집 성공! ({len(formatted_list)}개 문장)")
+        print(f"✅ [Primary Success] 자막 수집 성공! ({len(formatted_list)}개 문장)")
     except Exception as e:
-        print(f"⚠️ 자막 수집 제한됨 (설명란 데이터로 자동 대체): {e}")
-        transcript_text = "자막을 가져올 수 없습니다. 상세 설명란 데이터를 바탕으로 분석하세요."
+        print(f"⚠️ [Primary Failed] YouTubeTranscriptApi 차단: {e}")
+        # 3. 자막 수집 2차 시도 (HTML 파싱 Fallback)
+        if html_content:
+            fallback_text = extract_captions_from_html(html_content)
+            if fallback_text:
+                transcript_text = fallback_text
+                print(f"✅ [Fallback Success] HTML 자막 추출 성공!")
 
     meta_info = {
         "title": title or "유튜브 뜨개질 영상",
@@ -318,14 +347,11 @@ async def generate_pattern(req: PatternRequest):
             if creator_res.data and len(creator_res.data) > 0:
                 creator_id = creator_res.data[0]["id"]
 
-        # 💡 자막과 설명란이 모두 없으면 AI 환각 방지를 위해 즉시 예외 처리
-        has_no_transcript = not transcript or "자막을 가져올 수 없습니다" in transcript
-        has_no_description = not meta_info.get("description", "").strip()
-
-        if has_no_transcript and has_no_description:
+        # 💡 자막 수집 실패 시 부실한 10단 요약본이 생성되는 것을 방지하기 위한 예외 처리
+        if not transcript.strip():
             raise HTTPException(
                 status_code=400, 
-                detail="해당 영상은 자막과 상세설명이 제공되지 않아 도안을 자동으로 추출할 수 없습니다."
+                detail="해당 영상의 자막 추출에 실패하였습니다. 영상 자막(CC) 지원 여부를 확인해주세요."
             )
         
         # 3. AI Pass 1 & Pass 2 실행
@@ -362,6 +388,8 @@ async def generate_pattern(req: PatternRequest):
             "is_cached": False
         }
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
         print(f"❌ Error in /api/generate: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
