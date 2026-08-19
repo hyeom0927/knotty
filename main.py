@@ -3,6 +3,7 @@ import re
 import json
 import time
 import asyncio
+import urllib.request
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,7 +11,6 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 from youtube_transcript_api import YouTubeTranscriptApi
-import yt_dlp
 
 from prompts import PASS1_EXTRACTOR_PROMPT, PASS2_REFINER_PROMPT, build_user_prompt
 
@@ -71,7 +71,7 @@ def call_gemini_with_retry(model_name: str, contents: str, config: types.Generat
         except Exception as e:
             err_msg = str(e)
             if ("503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg) and attempt < max_retries - 1:
-                wait_time = (2 ** attempt) * 2  # 2초, 4초, 8초 지연
+                wait_time = (2 ** attempt) * 2
                 print(f"⚠️ Google API 503 서버 혼잡 발생. {wait_time}초 후 자동 재시도합니다 ({attempt + 1}/{max_retries})...")
                 time.sleep(wait_time)
             else:
@@ -82,7 +82,6 @@ def clean_pattern_text(text: str) -> str:
     if not text:
         return text
     
-    # 제거 대상 정규식 패턴 (대소문자 무시)
     patterns = [
         r"\(\s*does\s+not\s+count\s+as\s+(?:a\s+)?st(?:itch)?\s*\)",
         r"\(\s*코로\s*세지\s*않음\s*\)",
@@ -94,7 +93,6 @@ def clean_pattern_text(text: str) -> str:
     for p in patterns:
         cleaned = re.sub(p, "", cleaned, flags=re.IGNORECASE)
     
-    # 문장 내부 연속 공백 정돈
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
@@ -134,7 +132,6 @@ def get_matching_craft_terms(pattern_data: dict) -> list:
         matched_terms = []
         for term in all_terms:
             code = term.get("standard_code")
-            # 약어 독립 단어 매칭 (\b boundary 적용)
             if code and re.search(rf"\b{re.escape(code)}\b", full_pattern_str, re.IGNORECASE):
                 matched_terms.append({
                     "standard_code": term.get("standard_code"),
@@ -148,19 +145,23 @@ def get_matching_craft_terms(pattern_data: dict) -> list:
         return []
 
 def get_youtube_data_sync(url: str, video_id: str):
-    """유튜브 메타데이터 및 자막 수집 (동기 함수)"""
-    ydl_opts = {'quiet': True, 'skip_download': True}
+    """유튜브 공식 oEmbed API를 사용하여 봇 차단 없이 메타데이터 수집"""
     title, description, channel_name, channel_url = "", "", "", ""
     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        title = info.get('title', '')
-        description = info.get('description', '')
-        channel_name = info.get('uploader', info.get('channel', ''))
-        channel_url = info.get('uploader_url', info.get('channel_url', ''))
-        if info.get('thumbnail'):
-            thumbnail_url = info.get('thumbnail')
+    # YouTube official oEmbed endpoint (차단 우회)
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                oembed_data = json.loads(response.read().decode('utf-8'))
+                title = oembed_data.get('title', '')
+                channel_name = oembed_data.get('author_name', '')
+                channel_url = oembed_data.get('author_url', '')
+                thumbnail_url = oembed_data.get('thumbnail_url', thumbnail_url)
+    except Exception as e:
+        print(f"⚠️ oEmbed 수집 경고: {e}")
 
     transcript_text = ""
     try:
@@ -202,12 +203,12 @@ def get_youtube_data_sync(url: str, video_id: str):
 
     except Exception as e:
         print(f"⚠️ 자막 수집 경고: {e}")
-        transcript_text = "자막을 가져올 수 없습니다. 설명란 데이터를 바탕으로 추론하세요."
+        transcript_text = "자막을 가져올 수 없습니다. 수집된 제목 정보를 바탕으로 추론하세요."
 
     meta_info = {
-        "title": title,
+        "title": title or "유튜브 뜨개질 영상",
         "description": description,
-        "channel_name": channel_name,
+        "channel_name": channel_name or "유튜브 채널",
         "channel_url": channel_url,
         "thumbnail_url": thumbnail_url
     }
@@ -277,7 +278,6 @@ async def generate_pattern(req: PatternRequest):
             cached_record = existing.data[0]
             pattern_data = cached_record["pattern_data"]
             
-            # DB craft_terms 매칭 후 결과 추가
             craft_terms = get_matching_craft_terms(pattern_data)
             
             print(f"⚡ [Cache Hit] ID: {cached_record['id']}")
@@ -319,9 +319,7 @@ async def generate_pattern(req: PatternRequest):
         print("⏳ Pass 2 실행 중...")
         pattern_data = await asyncio.to_thread(call_gemini_pass2_sync, intermediate_json_str, meta_info)
 
-        # 💡 DB 저장 직전 데이터 괄호 문구 전처리 정제
         pattern_data = sanitize_pattern_data(pattern_data)
-
         db_title = pattern_data.get("pattern_title") or meta_info["title"]
 
         # 4. patterns 테이블에 저장
@@ -336,7 +334,6 @@ async def generate_pattern(req: PatternRequest):
 
         new_pattern_id = insert_res.data[0]["id"]
         
-        # craft_terms DB 매칭
         craft_terms = get_matching_craft_terms(pattern_data)
         
         return {
@@ -361,8 +358,6 @@ async def get_pattern_by_id(pattern_id: str):
 
         record = res.data[0]
         pattern_data = record.get("pattern_data", {})
-        
-        # craft_terms 조회 연동
         record["craft_terms"] = get_matching_craft_terms(pattern_data)
 
         return {
@@ -377,7 +372,6 @@ async def get_pattern_by_id(pattern_id: str):
 @app.put("/api/pattern/{pattern_id}")
 async def update_pattern(pattern_id: str, req: PatternUpdateRequest):
     try:
-        # 수정 시에도 정제 함수 적용
         sanitized_data = sanitize_pattern_data(req.pattern_data)
         
         res = supabase.table("patterns").update({
