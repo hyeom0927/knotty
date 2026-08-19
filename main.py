@@ -145,65 +145,52 @@ def get_matching_craft_terms(pattern_data: dict) -> list:
         return []
 
 def get_youtube_data_sync(url: str, video_id: str):
-    """유튜브 공식 oEmbed API를 사용하여 봇 차단 없이 메타데이터 수집"""
+    """유튜브 페이지 직접 파싱을 통해 설명란 복구 및 자막 수집"""
     title, description, channel_name, channel_url = "", "", "", ""
     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
-    # YouTube official oEmbed endpoint (차단 우회)
+    # 1. 브라우저인 척 HTTP 요청하여 description(설명란) 및 title 긁어오기
     try:
-        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
+        req = urllib.request.Request(
+            f"https://www.youtube.com/watch?v={video_id}",
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'ko-KR,ko;q=0.9'
+            }
+        )
         with urllib.request.urlopen(req) as response:
-            if response.status == 200:
-                oembed_data = json.loads(response.read().decode('utf-8'))
-                title = oembed_data.get('title', '')
-                channel_name = oembed_data.get('author_name', '')
-                channel_url = oembed_data.get('author_url', '')
-                thumbnail_url = oembed_data.get('thumbnail_url', thumbnail_url)
+            html = response.read().decode('utf-8', errors='ignore')
+            
+            # 설명란(shortDescription) 정규식 추출
+            desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
+            if desc_match:
+                # unicode escape 문자 변환 (예: \n, \u0026 등)
+                raw_desc = desc_match.group(1).replace(r'\n', '\n')
+                description = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_desc)
+            
+            # 제목 추출
+            title_match = re.search(r'"title":"([^"]*)"', html)
+            if title_match:
+                raw_title = title_match.group(1)
+                title = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_title)
+                
+            # 채널명 추출
+            channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
+            if channel_match:
+                channel_name = channel_match.group(1)
     except Exception as e:
-        print(f"⚠️ oEmbed 수집 경고: {e}")
+        print(f"⚠️ 페이지 파싱 경고: {e}")
 
+    # 2. 자막 수집 시도
     transcript_text = ""
     try:
-        transcript_list = None
-
-        if hasattr(YouTubeTranscriptApi, 'get_transcript'):
-            try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
-            except Exception:
-                pass
-
-        if transcript_list is None:
-            api_inst = YouTubeTranscriptApi()
-            if hasattr(api_inst, 'fetch'):
-                transcript_list = api_inst.fetch(video_id, languages=['ko', 'en'])
-            elif hasattr(api_inst, 'get_transcript'):
-                transcript_list = api_inst.get_transcript(video_id, languages=['ko', 'en'])
-            elif hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-                transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-                transcript_obj = transcripts.find_transcript(['ko', 'en'])
-                transcript_list = transcript_obj.fetch()
-
-        if transcript_list:
-            formatted_list = []
-            for item in transcript_list:
-                if isinstance(item, dict):
-                    start = item.get('start', 0)
-                    text = item.get('text', '')
-                else:
-                    start = getattr(item, 'start', 0)
-                    text = getattr(item, 'text', '')
-                
-                formatted_list.append(f"[{int(start)}s] {text}")
-
-            transcript_text = "\n".join(formatted_list)
-            print(f"✅ 자막 수집 성공! (총 {len(formatted_list)}개 문장 추출됨)")
-        else:
-            raise AttributeError("자막 데이터를 불러올 수 없습니다.")
-
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
+        formatted_list = [f"[{int(item['start'])}s] {item['text']}" for item in transcript_list]
+        transcript_text = "\n".join(formatted_list)
+        print(f"✅ 자막 수집 성공! ({len(formatted_list)}개 문장)")
     except Exception as e:
-        print(f"⚠️ 자막 수집 경고: {e}")
-        transcript_text = "자막을 가져올 수 없습니다. 수집된 제목 정보를 바탕으로 추론하세요."
+        print(f"⚠️ 자막 수집 실패 (Render IP 차단): {e}")
+        transcript_text = "자막을 가져올 수 없습니다. 상세 설명란 데이터를 바탕으로 분석하세요."
 
     meta_info = {
         "title": title or "유튜브 뜨개질 영상",
