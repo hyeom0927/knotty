@@ -229,7 +229,7 @@ def call_gemini_pass1_sync(meta_info: dict, transcript: str) -> str:
     """Pass 1: 잡담 제거 및 단별 핵심 요약 추출"""
     user_data = build_user_prompt(meta_info["title"], meta_info["description"], transcript)
     response = call_gemini_with_retry(
-        model_name='gemini-2.5-flash',
+        model_name='gemini-3.6-flash',
         contents=user_data,
         config=types.GenerateContentConfig(
             system_instruction=PASS1_EXTRACTOR_PROMPT,
@@ -243,7 +243,7 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict) -> dict:
     pass2_input = f"[Pass 1 정제 데이터]\n{intermediate_json_str}\n\n[원본 영상 정보]\n제목: {meta_info['title']}\n설명란: {meta_info['description']}"
     
     response = call_gemini_with_retry(
-        model_name='gemini-2.5-flash',
+        model_name='gemini-3.6-flash',
         contents=pass2_input,
         config=types.GenerateContentConfig(
             system_instruction=PASS2_REFINER_PROMPT,
