@@ -104,19 +104,26 @@ def sanitize_pattern_data(pattern_data: dict) -> dict:
         return pattern_data
 
     parts = pattern_data.get("parts", [])
-    for part in parts:
-        for step in part.get("steps", []):
-            if "formula" in step and step["formula"]:
-                step["formula"] = clean_pattern_text(step["formula"])
-            if "instruction" in step and step["instruction"]:
-                step["instruction"] = clean_pattern_text(step["instruction"])
+    if isinstance(parts, list):
+        for part in parts:
+            if isinstance(part, dict):
+                steps = part.get("steps", [])
+                if isinstance(steps, list):
+                    for step in steps:
+                        if isinstance(step, dict):
+                            if "formula" in step and isinstance(step["formula"], str):
+                                step["formula"] = clean_pattern_text(step["formula"])
+                            if "instruction" in step and isinstance(step["instruction"], str):
+                                step["instruction"] = clean_pattern_text(step["instruction"])
 
     steps = pattern_data.get("pattern_steps", [])
-    for step in steps:
-        if "formula" in step and step["formula"]:
-            step["formula"] = clean_pattern_text(step["formula"])
-        if "instruction" in step and step["instruction"]:
-            step["instruction"] = clean_pattern_text(step["instruction"])
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict):
+                if "formula" in step and isinstance(step["formula"], str):
+                    step["formula"] = clean_pattern_text(step["formula"])
+                if "instruction" in step and isinstance(step["instruction"], str):
+                    step["instruction"] = clean_pattern_text(step["instruction"])
 
     return pattern_data
 
@@ -243,7 +250,7 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict) -> dict:
     pass2_input = f"[Pass 1 정제 데이터]\n{intermediate_json_str}\n\n[원본 영상 정보]\n제목: {meta_info['title']}\n설명란: {meta_info['description']}"
     
     response = call_gemini_with_retry(
-        model_name='gemini-3.6-flash',
+        model_name=GEMINI_MODEL,
         contents=pass2_input,
         config=types.GenerateContentConfig(
             system_instruction=PASS2_REFINER_PROMPT,
@@ -264,6 +271,16 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict) -> dict:
         else:
             raise ValueError("AI 응답을 JSON 형태로 파싱할 수 없습니다.")
 
+    # 💡 [방어 코드] Gemini가 리스트([]) 형태로 반환했을 경우 딕셔너리로 구조화
+    if isinstance(final_json, list):
+        if len(final_json) > 0 and isinstance(final_json[0], dict) and ("parts" in final_json[0] or "pattern_steps" in final_json[0] or "pattern_title" in final_json[0]):
+            final_json = final_json[0]
+        else:
+            final_json = {"parts": final_json}
+
+    if not isinstance(final_json, dict):
+        final_json = {"data": final_json}
+
     final_json["metadata"] = {
         "channel_name": meta_info["channel_name"],
         "channel_url": meta_info["channel_url"],
@@ -272,7 +289,6 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict) -> dict:
     }
 
     return final_json
-
 # ==========================================
 # 4. API 엔드포인트
 # ==========================================
