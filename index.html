@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Knotty 🧶 - 스마트 뜨개 도안 생성기</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    body { font-family: 'Pretendard', sans-serif; }
+    .editing { outline: 2px dashed #f59e0b; background-color: #fffbeb; padding: 2px 4px; border-radius: 4px; }
+    
+    /* PDF 출력 시 페이지 끊김 방지 및 링크 영역 정밀 유지 */
+    tr, .page-break-avoid {
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    table { page-break-inside: auto; }
+    thead { display: table-header-group; }
+
+    /* PDF 내 클릭 히트박스 보정 */
+    a.pdf-clickable-link {
+      display: inline-flex !important;
+      align-items: center;
+      justify-content: center;
+      position: relative !important;
+      z-index: 10 !important;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800 pb-12">
+
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-50">
+    <div class="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-2 cursor-pointer" onclick="window.location.href='/'">
+        <span class="text-2xl">🧶</span>
+        <h1 class="text-xl font-bold bg-gradient-to-r from-amber-600 to-rose-600 bg-clip-text text-transparent">Knotty</h1>
+      </div>
+      <span class="text-xs bg-amber-100 text-amber-800 font-medium px-2.5 py-1 rounded-full">MVP Prototype</span>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-4 mt-8 space-y-6">
+
+    <section class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+      <h2 class="text-lg font-bold text-slate-900 mb-2">유튜브 영상으로 도안 만들기</h2>
+      <p class="text-sm text-slate-500 mb-4">뜨개질 유튜브 영상 링크를 입력하면 AI가 오타를 교정하여 깔끔한 도안으로 바꿔드립니다.</p>
+      
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input type="text" id="youtube-url" placeholder="https://www.youtube.com/watch?v=..." 
+               class="flex-1 px-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent text-sm">
+        <button onclick="generatePattern()" id="btn-submit" 
+                class="bg-amber-600 hover:bg-amber-700 text-white font-medium px-6 py-3 rounded-xl transition flex items-center justify-center space-x-2 text-sm shrink-0">
+          <span>도안 추출하기</span>
+        </button>
+      </div>
+    </section>
+
+    <div id="loading" class="hidden bg-white p-12 rounded-2xl shadow-sm border border-slate-200 text-center space-y-4">
+      <div class="inline-block animate-spin rounded-full h-10 w-10 border-4 border-amber-500 border-t-transparent"></div>
+      <p class="text-slate-600 font-medium text-sm">유튜브 자막을 분석하고 오타를 교정하는 중입니다...<br><span class="text-xs text-slate-400">(신규 영상은 10~20초 정도 소요될 수 있습니다)</span></p>
+    </div>
+
+    <div id="result-container" class="hidden space-y-4">
+      
+      <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-200/60 p-3 rounded-xl">
+        <div class="flex items-center space-x-2">
+          <button id="btn-edit" onclick="toggleEditMode()" class="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition">
+            ✏️ 도안 수정하기
+          </button>
+          <span id="edit-notice" class="hidden text-xs text-amber-700 font-medium animate-pulse">
+            💡 주황색 상자 안의 텍스트를 직접 수정하세요.
+          </span>
+        </div>
+        <div class="flex items-center space-x-2 shrink-0">
+          <button onclick="copyShareUrl()" class="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition">
+            🔗 링크 복사
+          </button>
+          <button onclick="downloadPNG()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition">
+            🖼️ PNG 저장
+          </button>
+          <button onclick="downloadPDF()" class="bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition">
+            📄 PDF 저장
+          </button>
+        </div>
+      </div>
+
+      <article id="pattern-card" class="bg-white p-8 rounded-2xl shadow-md border border-slate-200 space-y-6">
+        
+        <div class="border-b border-slate-100 pb-6 flex justify-between items-start gap-4 page-break-avoid">
+          <div class="space-y-2 flex-1">
+            <div class="flex items-center gap-2">
+              <a id="card-title-link" href="#" target="_blank" rel="noopener noreferrer" class="pdf-clickable-link text-2xl font-bold text-slate-900 hover:text-amber-600 transition">
+                <span id="card-title" class="editable">뜨개질 도안</span>
+              </a>
+              <span id="badge-cached" class="hidden text-xs bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-1 rounded-md shrink-0">
+                ⚡ 캐시됨 (초고속 불러오기)
+              </span>
+            </div>
+            <div>
+              <a id="card-channel-link" href="#" target="_blank" rel="noopener noreferrer" class="pdf-clickable-link text-sm font-semibold text-slate-600 hover:text-amber-600 flex items-center gap-1">
+                <span id="card-channel-name">유튜버 채널 정보</span>
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+              </a>
+            </div>
+          </div>
+
+          <a id="card-youtube-link" href="#" target="_blank" rel="noopener noreferrer" class="pdf-clickable-link relative group shrink-0 overflow-hidden rounded-xl border border-slate-200 shadow-sm w-40 h-24 bg-slate-100 block">
+            <img id="card-thumbnail" src="" alt="영상 썸네일" class="w-full h-full object-cover group-hover:scale-105 transition duration-300">
+            <div class="absolute inset-0 bg-black/20 group-hover:bg-black/30 flex items-center justify-center transition">
+              <div class="w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center shadow-md">
+                <svg class="w-4 h-4 fill-current ml-0.5" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              </div>
+            </div>
+          </a>
+        </div>
+
+        <div class="bg-slate-50 p-5 rounded-xl space-y-4 page-break-avoid">
+          <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
+            <span>🧺</span> 준비물 (Materials)
+          </h3>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+            <div class="bg-white p-3 rounded-lg border border-slate-200">
+              <span class="text-slate-400 block mb-1">사용 실</span>
+              <p id="mat-yarn" class="font-semibold text-slate-800 editable">-</p>
+            </div>
+            <div class="bg-white p-3 rounded-lg border border-slate-200">
+              <span class="text-slate-400 block mb-1">바늘 스펙</span>
+              <p id="mat-needle" class="font-semibold text-slate-800 editable">-</p>
+            </div>
+            <div class="bg-white p-3 rounded-lg border border-slate-200">
+              <span class="text-slate-400 block mb-1">부자재 / 총 단수</span>
+              <p id="mat-accessories" class="font-semibold text-slate-800 editable">-</p>
+            </div>
+          </div>
+
+          <div id="craft-terms-section" class="border-t border-slate-200 pt-4 hidden">
+            <h4 class="font-bold text-slate-900 text-xs flex items-center gap-1.5 mb-2.5">
+              <span>📖</span> 사용한 기법 (Craft Terms)
+            </h4>
+            <div class="border border-slate-200 rounded-lg overflow-hidden bg-white">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold">
+                  <tr>
+                    <th class="py-2 px-3 w-1/3">영문 기법</th>
+                    <th class="py-2 px-3 w-1/2">한국어 기법</th>
+                    <th class="py-2 px-3 w-1/6 text-center">영상</th>
+                  </tr>
+                </thead>
+                <tbody id="craft-terms-list" class="divide-y divide-slate-100">
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          <div class="flex justify-between items-center page-break-avoid">
+            <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
+              <span>📋</span> 상세 과정 (Pattern Steps)
+            </h3>
+            <span class="text-xs text-slate-400">완료한 단은 체크하여 기록하세요</span>
+          </div>
+
+          <div class="border border-slate-200 rounded-xl overflow-hidden">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold">
+                <tr>
+                  <th class="py-3 px-3 w-10 text-center">체크</th>
+                  <th class="py-3 px-3 w-20 text-center">단수</th>
+                  <th class="py-3 px-3 w-16 text-center">코수</th>
+                  <th class="py-3 px-3 w-36">도안약어</th>
+                  <th class="py-3 px-3">상세설명</th>
+                </tr>
+              </thead>
+              <tbody id="steps-list" class="divide-y divide-slate-100">
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="pt-4 border-t border-slate-100 flex justify-between items-center text-[10px] text-slate-400 page-break-avoid">
+          <span>Generated by Knotty AI</span>
+          <span id="card-date">2026.08.19</span>
+        </div>
+
+      </article>
+    </div>
+
+  </main>
+
+  <script>
+    const API_BASE = "http://127.0.0.1:8000";
+    let currentPatternId = null;
+    let currentPatternData = null;
+    let currentRootMeta = null;
+    let isEditMode = false;
+
+    function formatUrl(url) {
+      if (!url || typeof url !== 'string' || url.trim() === '' || url === '#') {
+        return '#';
+      }
+      let cleanUrl = url.trim();
+      if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+        cleanUrl = 'https://' + cleanUrl;
+      }
+      return cleanUrl;
+    }
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const patternId = urlParams.get("id");
+      if (patternId) {
+        await loadPatternById(patternId);
+      }
+    });
+
+    async function generatePattern() {
+      const urlInput = document.getElementById("youtube-url").value.trim();
+      if (!urlInput) return alert("유튜브 URL을 입력해 주세요.");
+
+      showLoading(true);
+
+      try {
+        const res = await fetch(`${API_BASE}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ youtube_url: urlInput })
+        });
+        const result = await res.json();
+
+        if (!res.ok) throw new Error(result.detail || "도안 생성에 실패했습니다.");
+
+        currentPatternId = result.pattern_id;
+        currentPatternData = result.data;
+        currentRootMeta = result;
+        
+        history.pushState(null, "", `?id=${currentPatternId}`);
+        renderPatternCard(result);
+
+      } catch (err) {
+        alert("에러: " + err.message);
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    async function loadPatternById(id) {
+      showLoading(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/pattern/${id}`);
+        const result = await res.json();
+
+        if (!res.ok) throw new Error(result.detail || "도안을 불러올 수 없습니다.");
+
+        const record = result.data;
+        currentPatternId = record.id;
+        currentPatternData = record.pattern_data;
+        currentRootMeta = record;
+
+        renderPatternCard(record);
+      } catch (err) {
+        alert("에러: " + err.message);
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    function renderPatternCard(rootMeta = {}) {
+      const data = rootMeta.pattern_data || rootMeta.data || {};
+
+      const rawYoutubeUrl = 
+        rootMeta.youtube_url || 
+        data.youtube_url || 
+        (data.metadata && data.metadata.youtube_url) || 
+        (rootMeta.pattern_data && rootMeta.pattern_data.youtube_url) || 
+        "#";
+
+      const mainYoutubeUrl = formatUrl(rawYoutubeUrl);
+
+      // 1. 제목 바인딩
+      const patternTitle = rootMeta.title || data.pattern_title || rootMeta.pattern_title || "뜨개질 도안";
+      document.getElementById("card-title").innerText = patternTitle;
+      document.getElementById("card-title-link").href = mainYoutubeUrl;
+
+      // 2. 유튜버 채널 바인딩
+      const creator = rootMeta.creators || data.creators || data.metadata || {};
+      const channelName = creator.channel_name || "유튜버 채널";
+      const channelUrl = formatUrl(creator.channel_url || rawYoutubeUrl);
+
+      document.getElementById("card-channel-name").innerText = channelName;
+      document.getElementById("card-channel-link").href = channelUrl;
+
+      // 3. 썸네일 링크 바인딩
+      document.getElementById("card-youtube-link").href = mainYoutubeUrl;
+      const thumbUrl = rootMeta.thumbnail_url || data.thumbnail_url || (data.metadata && data.metadata.thumbnail_url) || "";
+      document.getElementById("card-thumbnail").src = thumbUrl || "https://via.placeholder.com/320x180?text=No+Image";
+
+      if (rootMeta.is_cached) {
+        document.getElementById("badge-cached").classList.remove("hidden");
+      } else {
+        document.getElementById("badge-cached").classList.add("hidden");
+      }
+
+      // 준비물 정보
+      const mat = data.materials || {};
+      document.getElementById("mat-yarn").innerText = mat.yarn || "미기재";
+      
+      const needle = mat.needle || {};
+      const needleText = typeof needle === 'object' ? `${needle.type || ''} (${needle.size || '미기재'})` : needle;
+      document.getElementById("mat-needle").innerText = needleText;
+      
+      const acc = (mat.accessories || []).join(", ") || "없음";
+      document.getElementById("mat-accessories").innerText = `${acc} / 총 ${data.total_rows || '-'}단`;
+
+      // 4. 사용 기법 - 영문/한국어 텍스트 링크 제거 & 영상 재생 아이콘만 링크 적용
+      const craftTermsSection = document.getElementById("craft-terms-section");
+      const craftTermsList = document.getElementById("craft-terms-list");
+      craftTermsList.innerHTML = "";
+
+      const terms = rootMeta.craft_terms || data.craft_terms || [];
+      if (terms && terms.length > 0) {
+        craftTermsSection.classList.remove("hidden");
+        terms.forEach(term => {
+          const tr = document.createElement("tr");
+          tr.className = "hover:bg-slate-50 transition";
+
+          const rawTermVideo = term.video_url || term.video || rawYoutubeUrl;
+          const targetVideoUrl = formatUrl(rawTermVideo);
+
+          tr.innerHTML = `
+            <td class="py-2.5 px-3 font-mono font-bold text-amber-700">
+              ${term.standard_code || '-'}
+            </td>
+            <td class="py-2.5 px-3 text-slate-700 font-medium">
+              ${term.kr_formal || '-'}
+            </td>
+            <td class="py-2.5 px-3 text-center">
+              <a href="${targetVideoUrl}" target="_blank" rel="noopener noreferrer" class="pdf-clickable-link text-red-600 hover:text-red-700 transition p-1 rounded hover:bg-red-50" title="영상 보기">
+                <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              </a>
+            </td>
+          `;
+          craftTermsList.appendChild(tr);
+        });
+      } else {
+        craftTermsSection.classList.add("hidden");
+      }
+
+      // 단별 상세 과정
+      const stepsContainer = document.getElementById("steps-list");
+      stepsContainer.innerHTML = "";
+
+      if (data.parts && data.parts.length > 0) {
+        data.parts.forEach((part) => {
+          const partTr = document.createElement("tr");
+          partTr.className = "bg-slate-100/80 font-bold text-slate-800";
+          partTr.innerHTML = `<td colspan="5" class="py-2.5 px-3">📌 ${part.part_name}</td>`;
+          stepsContainer.appendChild(partTr);
+
+          (part.steps || []).forEach((step) => {
+            appendStepRow(stepsContainer, step);
+          });
+        });
+      } else {
+        (data.pattern_steps || []).forEach((step) => {
+          appendStepRow(stepsContainer, step);
+        });
+      }
+
+      document.getElementById("card-date").innerText = new Date().toLocaleDateString();
+      document.getElementById("result-container").classList.remove("hidden");
+    }
+
+    function appendStepRow(container, step) {
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-slate-50 transition";
+
+      const rowName = step.step_name || (step.step_number ? `${step.step_number}단` : '-');
+      const stitchCount = (step.total_stitches !== undefined && step.total_stitches !== null && step.total_stitches !== 0) 
+        ? `${step.total_stitches}코` 
+        : (step.estimated_stitches ? `${step.estimated_stitches}코` : '-');
+
+      tr.innerHTML = `
+        <td class="py-3 px-3 text-center">
+          <input type="checkbox" onchange="toggleRowCheck(this)" class="rounded border-slate-300 text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer">
+        </td>
+        <td class="py-3 px-3 text-center font-bold text-slate-700 editable">${rowName}</td>
+        <td class="py-3 px-3 text-center text-slate-600 font-medium editable">${stitchCount}</td>
+        <td class="py-3 px-3 text-amber-700 font-mono font-medium leading-relaxed whitespace-pre-wrap editable">${step.formula || '-'}</td>
+        <td class="py-3 px-3 text-slate-600 leading-relaxed editable">${step.instruction || step.summary || '-'}</td>
+      `;
+      container.appendChild(tr);
+    }
+
+    function toggleRowCheck(checkbox) {
+      const tr = checkbox.closest("tr");
+      if (checkbox.checked) {
+        tr.classList.add("bg-slate-100", "line-through", "opacity-50");
+      } else {
+        tr.classList.remove("bg-slate-100", "line-through", "opacity-50");
+      }
+    }
+
+    async function toggleEditMode() {
+      const btn = document.getElementById("btn-edit");
+      const notice = document.getElementById("edit-notice");
+      const editables = document.querySelectorAll(".editable");
+
+      if (!isEditMode) {
+        isEditMode = true;
+        btn.innerText = "💾 수정사항 DB 저장하기";
+        btn.className = "bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition";
+        notice.classList.remove("hidden");
+
+        editables.forEach(el => {
+          el.contentEditable = "true";
+          el.classList.add("editing");
+        });
+      } else {
+        isEditMode = false;
+        btn.innerText = "⏳ 저장 중...";
+        
+        const updatedYarn = document.getElementById("mat-yarn").innerText;
+        if (currentPatternData && currentPatternData.materials) {
+          currentPatternData.materials.yarn = updatedYarn;
+        }
+        
+        try {
+          const res = await fetch(`${API_BASE}/api/pattern/${currentPatternId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pattern_data: currentPatternData })
+          });
+          
+          if (!res.ok) throw new Error("수정사항 저장 실패");
+          alert("수정사항이 DB에 성공적으로 저장되었습니다!");
+
+        } catch (err) {
+          alert("저장 오류: " + err.message);
+        } finally {
+          btn.innerText = "✏️ 도안 수정하기";
+          btn.className = "bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition";
+          notice.classList.add("hidden");
+
+          editables.forEach(el => {
+            el.contentEditable = "false";
+            el.classList.remove("editing");
+          });
+        }
+      }
+    }
+
+    function getExportFileName(ext) {
+      const creator = currentRootMeta?.creators || currentPatternData?.creators || currentPatternData?.metadata || {};
+      const channelName = creator.channel_name || "Knotty";
+      const title = currentRootMeta?.title || currentPatternData?.pattern_title || "도안";
+
+      const safeChannel = channelName.replace(/[\\/:*?"<>|]/g, "").trim();
+      const safeTitle = title.replace(/[\\/:*?"<>|]/g, "").trim();
+
+      return `${safeChannel}_${safeTitle}.${ext}`;
+    }
+
+    async function downloadPNG() {
+      const card = document.getElementById("pattern-card");
+      const canvas = await html2canvas(card, { scale: 2, useCORS: true });
+      const link = document.createElement("a");
+      link.download = getExportFileName("png");
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    }
+
+    async function downloadPDF() {
+      const card = document.getElementById("pattern-card");
+
+      const opt = {
+        margin: [10, 10, 10, 10],
+        filename: getExportFileName("pdf"),
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { 
+          scale: 2, 
+          useCORS: true,
+          logging: false 
+        },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+        enableLinks: true
+      };
+
+      try {
+        await html2pdf().set(opt).from(card).save();
+      } catch (err) {
+        console.error("PDF 생성 에러:", err);
+        alert("PDF 생성 중 오류가 발생했습니다.");
+      }
+    }
+
+    function copyShareUrl() {
+      navigator.clipboard.writeText(window.location.href);
+      alert("공유 링크가 클립보드에 복사되었습니다!");
+    }
+
+    function showLoading(show) {
+      document.getElementById("loading").classList.toggle("hidden", !show);
+      if (show) document.getElementById("result-container").classList.add("hidden");
+    }
+  </script>
+</body>
+</html>
