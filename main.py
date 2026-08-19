@@ -23,6 +23,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "")
+# Render Environment Variables에서 지정 가능 (기본값: gemini-3.6-flash)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -236,7 +238,7 @@ def call_gemini_pass1_sync(meta_info: dict, transcript: str) -> str:
     """Pass 1: 잡담 제거 및 단별 핵심 요약 추출"""
     user_data = build_user_prompt(meta_info["title"], meta_info["description"], transcript)
     response = call_gemini_with_retry(
-        model_name='gemini-3.6-flash',
+        model_name=GEMINI_MODEL,
         contents=user_data,
         config=types.GenerateContentConfig(
             system_instruction=PASS1_EXTRACTOR_PROMPT,
@@ -289,6 +291,7 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict) -> dict:
     }
 
     return final_json
+
 # ==========================================
 # 4. API 엔드포인트
 # ==========================================
@@ -336,7 +339,7 @@ async def generate_pattern(req: PatternRequest):
             if creator_res.data and len(creator_res.data) > 0:
                 creator_id = creator_res.data[0]["id"]
 
-        # 💡 자막 수집 실패 시 부실 요약본 생성을 방지하기 위한 예외 처리
+        # 💡 자막 수집 실패 시 예외 처리
         if not transcript or not transcript.strip():
             raise HTTPException(
                 status_code=400, 
@@ -344,12 +347,12 @@ async def generate_pattern(req: PatternRequest):
             )
         
         # 3. AI Pass 1 & Pass 2 실행
-        print("⏳ Pass 1 실행 중...")
+        print(f"⏳ Pass 1 실행 중... (사용 모델: {GEMINI_MODEL})")
         intermediate_json_str = await asyncio.to_thread(call_gemini_pass1_sync, meta_info, transcript)
 
         await asyncio.sleep(1.5)
 
-        print("⏳ Pass 2 실행 중...")
+        print(f"⏳ Pass 2 실행 중... (사용 모델: {GEMINI_MODEL})")
         pattern_data = await asyncio.to_thread(call_gemini_pass2_sync, intermediate_json_str, meta_info)
 
         pattern_data = sanitize_pattern_data(pattern_data)
