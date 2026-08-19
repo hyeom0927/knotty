@@ -147,7 +147,7 @@ def get_matching_craft_terms(pattern_data: dict) -> list:
         return []
 
 def get_youtube_data_sync(url: str, video_id: str):
-    """유튜브 메타데이터 수집 및 Supadata API 기반 자막 수집 (Fallback: YouTubeTranscriptApi)"""
+    """유튜브 메타데이터 수집 및 Supadata API 기반 자막 수집"""
     title, description, channel_name, channel_url = "", "", "", ""
     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
@@ -162,30 +162,28 @@ def get_youtube_data_sync(url: str, video_id: str):
         )
         with urllib.request.urlopen(req) as response:
             html = response.read().decode('utf-8', errors='ignore')
-            
             desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
             if desc_match:
                 raw_desc = desc_match.group(1).replace(r'\n', '\n')
                 description = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_desc)
-            
             title_match = re.search(r'"title":"([^"]*)"', html)
             if title_match:
                 raw_title = title_match.group(1)
                 title = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_title)
-                
             channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
             if channel_match:
                 channel_name = channel_match.group(1)
     except Exception as e:
         print(f"⚠️ 페이지 파싱 경고: {e}")
 
-    # 2. Supadata API 우선 호출 (Render 유튜브 IP 차단 100% 회피)
+    # 2. Supadata API 호출 (Render 유튜브 IP 차단 우회)
     transcript_text = ""
-    supadata_key = os.getenv("SUPADATA_API_KEY")
+    supadata_key = os.getenv("SUPADATA_API_KEY", "").strip()
 
     if supadata_key:
         try:
-            sd_url = f"https://api.supadata.ai/v1/youtube/transcript?videoId={video_id}&lang=ko"
+            encoded_url = urllib.parse.quote(f"https://www.youtube.com/watch?v={video_id}")
+            sd_url = f"https://api.supadata.ai/v1/youtube/transcript?url={encoded_url}"
             sd_req = urllib.request.Request(
                 sd_url, 
                 headers={"x-api-key": supadata_key}
@@ -193,21 +191,29 @@ def get_youtube_data_sync(url: str, video_id: str):
             with urllib.request.urlopen(sd_req) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 content = data.get("content", [])
-                lines = [f"[{int(item['offset']/1000)}s] {item['text']}" for item in content]
-                transcript_text = "\n".join(lines)
-                print(f"✅ Supadata 자막 수집 성공! ({len(lines)}개 문장)")
+                if isinstance(content, list):
+                    lines = [f"[{int(item.get('offset', 0)/1000)}s] {item.get('text', '')}" for item in content]
+                    transcript_text = "\n".join(lines)
+                elif isinstance(content, str):
+                    transcript_text = content
+                print(f"✅ Supadata 자막 수집 성공! ({len(transcript_text)}자)")
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode('utf-8', errors='ignore')
+            print(f"❌ Supadata HTTP 에러 ({e.code}): {err_msg}")
         except Exception as e:
-            print(f"⚠️ Supadata 자막 수집 실패: {e}")
+            print(f"❌ Supadata 호출 예외: {e}")
+    else:
+        print("⚠️ SUPADATA_API_KEY 환경변수가 설정되지 않았습니다.")
 
-    # 3. Supadata Key 미설정 또는 실패 시 로컬 개발환경용 Fallback
+    # 3. Supadata 미설정/실패 시 Fallback (로컬 전용)
     if not transcript_text:
         try:
             transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
             formatted_list = [f"[{int(item['start'])}s] {item['text']}" for item in transcript_list]
             transcript_text = "\n".join(formatted_list)
-            print(f"✅ [Fallback] YouTubeTranscriptApi 자막 수집 성공! ({len(formatted_list)}개 문장)")
+            print(f"✅ [Fallback] YouTubeTranscriptApi 성공")
         except Exception as e:
-            print(f"❌ YouTubeTranscriptApi 수집 실패 (Render IP 차단): {e}")
+            print(f"❌ YouTubeTranscriptApi 실패 (Render IP 차단): {e}")
 
     meta_info = {
         "title": title or "유튜브 뜨개질 영상",
