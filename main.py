@@ -37,7 +37,7 @@ SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "")
 #   GEMINI_MODEL       : 위 둘을 지정하지 않았을 때 쓰는 공통 fallback (선택)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "")
 GEMINI_MODEL_PASS1 = os.getenv("GEMINI_MODEL_PASS1") or GEMINI_MODEL or "gemini-3.7-flash"
-GEMINI_MODEL_PASS2 = os.getenv("GEMINI_MODEL_PASS2") or GEMINI_MODEL or "gemini-2.5-flash"
+GEMINI_MODEL_PASS2 = os.getenv("GEMINI_MODEL_PASS2") or GEMINI_MODEL or "gemini-3.1-flash-lite"
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -45,8 +45,39 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 print(f"🧶 Knotty 기동 — Pass 1: {GEMINI_MODEL_PASS1} / Pass 2: {GEMINI_MODEL_PASS2}")
 
 
+def _verify_models_on_startup():
+    """설정된 모델이 실제로 존재하는지 기동 시 확인한다.
+
+    모델 이름 오타(`gemini-3.1-flash` ↔ `gemini-3.1-flash-lite`)나
+    구글이 조용히 은퇴시킨 모델을 **사용자 요청 전에** 로그로 잡아내기 위함이다.
+    조회에 실패해도 서비스는 그대로 뜬다.
+    """
+    try:
+        available = {m.name.split("/")[-1] for m in ai_client.models.list()}
+    except Exception as e:
+        print(f"⚠️ 모델 목록을 조회하지 못해 검증을 건너뜁니다: {str(e)[:120]}")
+        return
+
+    for label, name in (("Pass 1", GEMINI_MODEL_PASS1), ("Pass 2", GEMINI_MODEL_PASS2)):
+        if name in available:
+            print(f"   ✅ {label}: {name}")
+        else:
+            stem = name.split("-")[0] + "-" + (name.split("-")[1] if "-" in name else "")
+            similar = sorted(a for a in available if a.startswith(stem))[:6]
+            print(f"   ❌ {label}: '{name}' 은(는) 존재하지 않는 모델입니다."
+                  f" 환경변수를 확인하세요. 비슷한 이름: {similar or '(없음)'}")
+
+
+_verify_models_on_startup()
+
+
 class QuotaExceededError(Exception):
     """AI 호출 한도 소진. 재시도해도 소용없으므로 사용자에게 그대로 알린다."""
+    pass
+
+
+class ModelOverloadedError(Exception):
+    """구글 서버 혼잡(503)이 재시도 후에도 계속됨. 잠시 뒤 다시 하면 대개 풀린다."""
     pass
 
 app = FastAPI(
@@ -117,12 +148,20 @@ def canonical_youtube_url(video_id: str) -> str:
     """저장·표시에 쓰는 표준 주소. 재생 위치(t=)나 재생목록 파라미터를 제거한다."""
     return f"https://www.youtube.com/watch?v={video_id}"
 
-def call_gemini_with_retry(model_name: str, contents: str, config: types.GenerateContentConfig, max_retries: int = 3):
+# 재시도 대기 시간(초). 503은 구글 쪽 수요 급증이라 몇 초로는 잘 안 풀린다.
+# 합계 약 41초까지 기다린다. 자막 분석 자체가 20~60초 걸리므로 체감 차이는 크지 않다.
+_RETRY_WAITS = [3, 6, 12, 20]
+
+
+def call_gemini_with_retry(model_name: str, contents: str, config: types.GenerateContentConfig,
+                           max_retries: int = len(_RETRY_WAITS) + 1):
     """503(서버 혼잡) / 429(호출량 초과) 발생 시 지수 대기 후 재시도하는 래퍼
 
-    429는 두 종류를 구분한다.
-      - 분당 한도(RPM/TPM) 초과 : 잠시 기다리면 풀리므로 재시도
-      - 일일 한도 초과          : 기다려도 소용없으므로 즉시 QuotaExceededError
+    오류를 네 가지로 나눈다.
+      - 404 모델 없음  : 설정 문제. 기다려도 안 되므로 즉시 중단
+      - 429 일일 한도  : 기다려도 소용없음 → QuotaExceededError
+      - 429 분당 한도  : 잠시 기다리면 풀림 → 재시도
+      - 503 서버 혼잡  : 구글 쪽 사정. 가장 길게 기다렸다가 재시도
     """
     for attempt in range(max_retries):
         try:
@@ -137,20 +176,109 @@ def call_gemini_with_retry(model_name: str, contents: str, config: types.Generat
             is_rate_limited = "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg
             is_daily_quota = bool(re.search(r"per\s*day|perday|daily", err_msg, re.IGNORECASE))
 
+            # 모델이 없거나 은퇴한 경우 — 재시도해도 소용없고 원인이 분명해야 한다.
+            # (구글은 구모델을 조용히 닫으면서 404 NOT_FOUND를 돌려준다)
+            if "404" in err_msg or "NOT_FOUND" in err_msg or "no longer available" in err_msg:
+                print(f"🚫 [{model_name}] 모델을 사용할 수 없습니다. "
+                      f"GEMINI_MODEL_PASS1/PASS2 환경변수를 확인하세요: {err_msg[:200]}")
+                raise ValueError(
+                    f"'{model_name}' 모델을 사용할 수 없습니다. 서비스 설정의 모델 이름을 확인해 주세요."
+                ) from e
+
             # 어떤 한도에 걸렸는지 원문을 남긴다 (quota 이름이 여기 찍힌다)
             if is_rate_limited:
                 print(f"🚫 [{model_name}] 호출량 한도 응답: {err_msg}")
 
-            if is_rate_limited and (is_daily_quota or attempt == max_retries - 1):
+            if is_rate_limited and is_daily_quota:
                 raise QuotaExceededError(model_name) from e
 
-            if (is_overloaded or is_rate_limited) and attempt < max_retries - 1:
-                wait_time = (2 ** attempt) * 2
-                reason = "429 호출량 초과" if is_rate_limited else "503 서버 혼잡"
-                print(f"⚠️ [{model_name}] {reason}. {wait_time}초 후 재시도 ({attempt + 1}/{max_retries})...")
+            is_last = attempt >= max_retries - 1
+            if (is_overloaded or is_rate_limited) and not is_last:
+                wait_time = _RETRY_WAITS[min(attempt, len(_RETRY_WAITS) - 1)]
+                reason = "429 호출량 초과" if is_rate_limited else "503 서버 혼잡(구글 쪽 수요 급증)"
+                print(f"⚠️ [{model_name}] {reason}. {wait_time}초 후 재시도 "
+                      f"({attempt + 1}/{max_retries - 1})...")
                 time.sleep(wait_time)
-            else:
-                raise
+                continue
+
+            # 재시도를 다 쓴 경우
+            if is_rate_limited:
+                raise QuotaExceededError(model_name) from e
+            if is_overloaded:
+                print(f"🚫 [{model_name}] 서버 혼잡이 계속됩니다 (총 {sum(_RETRY_WAITS)}초 대기 후 포기)")
+                raise ModelOverloadedError(model_name) from e
+            raise
+
+_PATTERN_KEYS = ("pattern_title", "parts", "pattern_steps", "materials", "total_rows")
+
+
+def _iter_json_values(text: str) -> list:
+    """텍스트에 섞여 있는 최상위 JSON 값들을 순서대로 모두 뽑아낸다.
+
+    `json.loads`는 값 하나만 허용해서, 뒤에 다른 객체나 설명 문장이 붙으면
+    'Extra data' 오류를 낸다. raw_decode는 값 하나를 읽고 끝난 위치를 알려주므로
+    이어서 다음 값을 찾을 수 있다.
+    """
+    decoder = json.JSONDecoder()
+    found, idx, length = [], 0, len(text)
+
+    while idx < length:
+        starts = [p for p in (text.find("{", idx), text.find("[", idx)) if p != -1]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            value, end = decoder.raw_decode(text, start)
+            found.append(value)
+            idx = end
+        except json.JSONDecodeError:
+            idx = start + 1   # 여는 괄호였지만 JSON이 아니었다면 다음 후보로
+
+    return found
+
+
+def parse_ai_json(raw_text: str) -> dict:
+    """AI 응답에서 도안 JSON을 꺼낸다.
+
+    Gemini는 가끔 이렇게 답한다.
+      - ```json 코드펜스로 감쌈
+      - JSON 뒤에 설명 문장을 덧붙임
+      - 객체를 두 개 이상 연달아 출력함
+    어느 경우든 '도안처럼 생긴' 객체를 골라낸다.
+    """
+    text = (raw_text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE).strip()
+
+    values = _iter_json_values(text)
+    if not values:
+        preview = text[:300].replace("\n", " ")
+        print(f"❌ AI 응답에서 JSON을 찾지 못했습니다 ({len(text)}자): {preview}")
+        raise ValueError("AI 응답을 JSON 형태로 파싱할 수 없습니다.")
+
+    if len(values) > 1:
+        print(f"⚠️ AI 응답에 JSON 값이 {len(values)}개 있습니다. 도안에 해당하는 것을 고릅니다.")
+
+    # 도안 키를 가장 많이 가진 객체를 고른다
+    def score(v):
+        return sum(1 for k in _PATTERN_KEYS if isinstance(v, dict) and k in v)
+
+    best = max(values, key=score)
+    if score(best) == 0:
+        best = values[0]   # 도안처럼 보이는 게 없으면 첫 값
+
+    # 리스트로 답한 경우 딕셔너리로 구조화
+    if isinstance(best, list):
+        if best and isinstance(best[0], dict) and any(k in best[0] for k in _PATTERN_KEYS):
+            best = best[0]
+        else:
+            best = {"parts": best}
+
+    if not isinstance(best, dict):
+        best = {"data": best}
+
+    return best
+
 
 def clean_pattern_text(text: str) -> str:
     """도안 약어 및 상세 설명에서 불필요한 기둥사슬 부연설명 괄호 문구 제거"""
@@ -786,28 +914,7 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict, system_p
         )
     )
 
-    raw_final_text = response.text.strip()
-    raw_final_text = re.sub(r"^```(?:json)?\s*", "", raw_final_text, flags=re.MULTILINE)
-    raw_final_text = re.sub(r"```\s*$", "", raw_final_text, flags=re.MULTILINE).strip()
-
-    try:
-        final_json = json.loads(raw_final_text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw_final_text, re.DOTALL)
-        if match:
-            final_json = json.loads(match.group(0))
-        else:
-            raise ValueError("AI 응답을 JSON 형태로 파싱할 수 없습니다.")
-
-    # 💡 [방어 코드] Gemini가 리스트([]) 형태로 반환했을 경우 딕셔너리로 구조화
-    if isinstance(final_json, list):
-        if len(final_json) > 0 and isinstance(final_json[0], dict) and ("parts" in final_json[0] or "pattern_steps" in final_json[0] or "pattern_title" in final_json[0]):
-            final_json = final_json[0]
-        else:
-            final_json = {"parts": final_json}
-
-    if not isinstance(final_json, dict):
-        final_json = {"data": final_json}
+    final_json = parse_ai_json(response.text)
 
     final_json["metadata"] = {
         "channel_name": meta_info["channel_name"],
@@ -821,6 +928,48 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict, system_p
 # ==========================================
 # 4. API 엔드포인트
 # ==========================================
+
+@app.get("/api/health")
+async def health():
+    """현재 서버가 어떤 설정으로 떠 있는지 확인한다.
+
+    모델 이름 오타처럼 환경변수가 의심될 때 로그를 못 봐도 바로 알 수 있게 한다.
+    비밀값은 노출하지 않고 '설정됨' 여부만 알린다.
+    """
+    try:
+        available = sorted(m.name.split("/")[-1] for m in ai_client.models.list())
+    except Exception as e:
+        available = None
+        list_error = str(e)[:150]
+    else:
+        list_error = None
+
+    def check(name):
+        return {
+            "model": name,
+            "exists": (name in available) if available is not None else None,
+        }
+
+    return {
+        "status": "ok",
+        "models": {
+            "pass1": check(GEMINI_MODEL_PASS1),
+            "pass2": check(GEMINI_MODEL_PASS2),
+        },
+        "env": {
+            # 어떤 환경변수가 실제로 들어와 있는지 (값이 아니라 존재 여부만)
+            "GEMINI_MODEL": os.getenv("GEMINI_MODEL") or None,
+            "GEMINI_MODEL_PASS1": os.getenv("GEMINI_MODEL_PASS1") or None,
+            "GEMINI_MODEL_PASS2": os.getenv("GEMINI_MODEL_PASS2") or None,
+            "GEMINI_API_KEY": "설정됨" if GEMINI_API_KEY else "없음",
+            "SUPABASE_URL": "설정됨" if SUPABASE_URL else "없음",
+            "SUPABASE_KEY": "설정됨" if SUPABASE_KEY else "없음",
+            "SUPADATA_API_KEY": "설정됨" if SUPADATA_API_KEY else "없음",
+        },
+        "available_models": available,
+        "available_models_error": list_error,
+    }
+
 
 @app.post("/api/generate")
 async def generate_pattern(req: PatternRequest):
@@ -958,6 +1107,14 @@ async def generate_pattern(req: PatternRequest):
             status_code=429,
             detail=f"오늘 AI 사용량을 모두 썼어요. 잠시 후 또는 내일 다시 시도해 주세요. (모델: {qe})"
         )
+    except ModelOverloadedError as me:
+        raise HTTPException(
+            status_code=503,
+            detail="지금 AI 서버가 몰려서 응답하지 못했어요. 1~2분 뒤에 다시 시도해 주세요."
+        )
+    except ValueError as ve:
+        # 모델 이름 오류 등 설정 문제
+        raise HTTPException(status_code=500, detail=str(ve))
     except Exception as e:
         print(f"❌ Error in /api/generate: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
