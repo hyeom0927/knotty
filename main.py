@@ -470,7 +470,11 @@ DEFAULT_STITCH_DELTA = {
     "inc": 2,     # 한 코에 2번 → 1코 증가
     "dec": 1,     # 2코를 1코로 → 1코 감소
     "sc3tog": 1,
-    "dc inc": 2,  # standard_code `dc_inc`
+    "sc3inc": 3,    # 한 코에 짧은뜨기 3개
+    "hdc2inc": 2,
+    "tr3inc": 3,
+    "dc2inc": 2,
+    "dc4tog": 1,
     "dc2tog": 1, "dc3tog": 1,
     # 코바늘 — 무늬·마무리 (한 코를 먹고 한 코를 남김)
     "puff": 1, "bobble": 1, "popcorn": 1,

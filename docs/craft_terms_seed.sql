@@ -5,7 +5,7 @@
 --    지금 들어 있는 값은 전부 이 스크립트가 넣은 시드라 잃을 것이 없습니다.
 --    ①의 drop 주석을 풀고 전체를 한 번에 실행하세요.
 --
--- 구성: 코바늘 약어 22 + 코바늘 용어 4 + 대바늘 약어 6 = 총 32건
+-- 구성: 코바늘 약어 26 + 코바늘 용어 4 + 대바늘 약어 6 = 총 35건
 -- ============================================================
 
 
@@ -62,7 +62,7 @@ create table public.craft_terms (
 
 
 -- ------------------------------------------------------------
--- ② 코바늘 — 도안 약어 (22건)
+-- ② 코바늘 — 도안 약어 (26건)
 -- ------------------------------------------------------------
 insert into craft_terms
   (craft_type, entry_type, standard_code, kr_name, stitch_delta, description)
@@ -92,12 +92,20 @@ values
    '짧은뜨기 2개를 한 번에 마무리해 1코로 줄입니다. 도안에는 sc2tog로도 표기합니다.'),
   ('crochet','stitch','sc3tog', '짧은뜨기 3코 모아뜨기',    1,
    '짧은뜨기 3개를 한 번에 마무리해 2코를 줄입니다.'),
-  ('crochet','stitch','dc_inc', '한길긴뜨기 2코 늘려뜨기',  2,
+  ('crochet','stitch','dc2inc', '한길긴뜨기 2코 늘려뜨기',  2,
    '한 코에 한길긴뜨기를 2개 떠서 1코를 늘립니다. 도안에는 dc inc 또는 2 dc in next st로 표기합니다.'),
+  ('crochet','stitch','sc3inc', '짧은뜨기 3코 늘려뜨기',    3,
+   '한 코에 짧은뜨기를 3개 떠서 2코를 늘립니다. 도안에는 sc 3 in 1 st 또는 3 sc in next st로도 표기합니다.'),
+  ('crochet','stitch','hdc2inc', '긴뜨기 2코 늘려뜨기',      2,
+   '한 코에 긴뜨기를 2개 떠서 1코를 늘립니다. 도안에는 hdc inc 또는 2 hdc in next st로 표기합니다.'),
+  ('crochet','stitch','tr3inc', '두길긴뜨기 3코 늘려뜨기',  3,
+   '한 코에 두길긴뜨기를 3개 떠서 2코를 늘립니다. 도안에는 tr inc3 또는 3 tr in next st로 표기합니다.'),
   ('crochet','stitch','dc2tog', '한길긴뜨기 2코 모아뜨기',  1,
    '한길긴뜨기 2개를 한 번에 마무리해 1코로 줄입니다.'),
   ('crochet','stitch','dc3tog', '한길긴뜨기 3코 모아뜨기',  1,
    '한길긴뜨기 3개를 한 번에 마무리해 2코를 줄입니다.'),
+  ('crochet','stitch','dc4tog', '한길긴뜨기 4코 모아뜨기',  1,
+   '한길긴뜨기 4개를 한 번에 마무리해 3코를 줄입니다.'),
 
   -- 입체 무늬 ---------------------------------------------------
   ('crochet','stitch','puff',    '긴뜨기 5코 퍼프뜨기',      1,
@@ -181,7 +189,7 @@ where entry_type = 'stitch';
 -- ------------------------------------------------------------
 select craft_type, entry_type, count(*)
 from craft_terms group by craft_type, entry_type order by 1, 2;
--- 기대: crochet/stitch 22, crochet/technique 4, knitting/stitch 6  (총 32)
+-- 기대: crochet/stitch 26, crochet/technique 4, knitting/stitch 6  (총 36)
 
 -- 코수가 비어 있는 stitch 항목이 있으면 그 기법이 든 단은 검증에서 제외됩니다
 select standard_code, kr_name from craft_terms
@@ -191,7 +199,7 @@ where entry_type = 'stitch' and stitch_delta is null;
 -- 기호 이미지가 연결된 항목
 select standard_code, kr_name, thumbnail_url from craft_terms
 where thumbnail_url is not null order by craft_type, standard_code;
--- 기대: 28건 (stitch 전부. technique 4건은 기호가 없는 것이 정상)
+-- 기대: 32건 (stitch 전부. technique 4건은 기호가 없는 것이 정상)
 
 
 -- ------------------------------------------------------------

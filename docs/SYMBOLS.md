@@ -4,7 +4,7 @@
 좌표는 전부 [`symbols/generate.py`](../symbols/generate.py) 한 곳에 모여 있고, 실행하면 SVG가 다시 생성됩니다.
 
 ```bash
-python3 symbols/generate.py    # 28개 아이콘 + preview.svg 재생성
+python3 symbols/generate.py    # 32개 아이콘 + preview.svg 재생성
 ```
 
 전체 모양은 [`symbols/preview.svg`](../symbols/preview.svg)를 브라우저로 열면 한눈에 보입니다.
@@ -47,8 +47,8 @@ python3 symbols/generate.py    # 28개 아이콘 + preview.svg 재생성
 
 편물에서 코가 퍼지는 방향을 그대로 그립니다.
 
-- **늘림(V)** — 아래 한 코에서 위로 두 코가 벌어짐 → `inc`, `dc_inc`
-- **줄임(Λ)** — 아래 여러 코가 위로 한 코에 모임 → `dec`, `sc3tog`, `dc2tog`, `dc3tog`
+- **늘림(V)** — 아래 한 코에서 위로 여러 코가 벌어짐 → `inc`, `sc3inc`, `hdc2inc`, `dc2inc`, `tr3inc`
+- **줄임(Λ)** — 아래 여러 코가 위로 한 코에 모임 → `dec`, `sc3tog`, `dc2tog`, `dc3tog`, `dc4tog`
 - **다리 개수** = 관여하는 코 수 (`sc3tog`·`dc3tog`는 다리 3개)
 - **윗바가 있으면 한길긴뜨기 계열**, 없으면 짧은뜨기 계열
 
@@ -103,7 +103,24 @@ where entry_type = 'stitch';
 
 ---
 
-## 5. 지금 없는 것
+## 5. 코드 작명
+
+`formula`에 등장하는 약어에는 **언더스코어를 쓰지 않습니다.** 실제 도안 표기와 달라 보이기 때문입니다.
+
+```
+줄임   <기법><개수>tog    sc3tog · dc2tog · dc3tog · dc4tog · k2tog
+늘림   <기법><개수>inc    sc3inc · hdc2inc · dc2inc · tr3inc
+```
+
+`inc` / `dec`(짧은뜨기 2코)는 아미구루미 관례이자 기존 도안이 쓰고 있어 그대로 둡니다.
+
+예외는 **`sl_st` 하나**입니다. 실제 표기가 두 단어(`sl st`)라 붙여 쓰면 낯설어집니다.
+저장은 `sl_st`, 화면에는 `sl st`로 보여줍니다 — 파서가 `[\s_]+`를 같게 취급해 안전합니다.
+용어사전 전용 4건(`color_change` 등)은 `formula`에 나오지 않는 내부 키라 해당 없습니다.
+
+---
+
+## 6. 지금 없는 것
 
 - **용어사전 전용 4건**(배색·타원형 만들기·원형코 만들기·돗바늘 마무리)에는 기호가 없습니다.
   도안 약어가 아니라 "과정"이라 차트 기호가 존재하지 않습니다.
