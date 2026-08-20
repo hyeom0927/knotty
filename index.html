@@ -174,6 +174,7 @@
                 <tr>
                   <th class="py-3 px-3 w-10 text-center">체크</th>
                   <th class="py-3 px-3 w-20 text-center">단수</th>
+                  <th class="py-3 px-3 w-16 text-center">영상</th>
                   <th class="py-3 px-3 w-16 text-center">코수</th>
                   <th class="py-3 px-3 w-36">도안약어</th>
                   <th class="py-3 px-3">상세설명</th>
@@ -384,7 +385,7 @@
         data.parts.forEach((part, partIdx) => {
           const partTr = document.createElement("tr");
           partTr.className = "bg-slate-100/80 font-bold text-slate-800";
-          partTr.innerHTML = `<td colspan="5" class="py-2.5 px-3">📌 ${part.part_name}</td>`;
+          partTr.innerHTML = `<td colspan="6" class="py-2.5 px-3">📌 ${part.part_name}</td>`;
           stepsContainer.appendChild(partTr);
 
           (part.steps || []).forEach((step, stepIdx) => {
@@ -412,6 +413,60 @@
 
       document.getElementById("card-date").innerText = new Date().toLocaleDateString();
       document.getElementById("result-container").classList.remove("hidden");
+    }
+
+    // 초 → "12:34" 표기
+    function formatTime(sec) {
+      const m = Math.floor(sec / 60), s = sec % 60;
+      return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    // 현재 도안의 원본 영상 주소
+    function currentVideoUrl() {
+      const d = currentPatternData || {};
+      const raw = (currentRootMeta && currentRootMeta.youtube_url)
+        || d.youtube_url || (d.metadata && d.metadata.youtube_url) || "";
+      return formatUrl(raw) === "#" ? "" : formatUrl(raw);
+    }
+
+    // data-step-path("파츠.단") 로 원본 step 객체를 찾는다
+    function findStep(path) {
+      const [partIdx, stepIdx] = String(path).split(".").map(Number);
+      const d = currentPatternData || {};
+      return partIdx >= 0
+        ? ((d.parts && d.parts[partIdx] && d.parts[partIdx].steps) || [])[stepIdx]
+        : (d.pattern_steps || [])[stepIdx];
+    }
+
+    // ⚠️를 눌러 "확인함"으로 표시. 서버가 재검증해도 유지되도록
+    // 그때의 약어·코수를 지문으로 함께 저장한다.
+    async function acknowledgeStep(path) {
+      const step = findStep(path);
+      if (!step) return;
+      if (!confirm("이 단의 코수를 직접 확인하셨나요?\n확인 표시를 하면 ⚠️ 가 사라집니다.")) return;
+
+      step.validation_ack = `${step.formula || ""}|${step.total_stitches}`;
+      step.validation = { status: "acknowledged" };
+
+      try {
+        const res = await fetch(`${API_BASE}/api/pattern/${currentPatternId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pattern_data: currentPatternData })
+        });
+        if (!res.ok) throw new Error("저장 실패");
+        const saved = await res.json();
+        if (saved && saved.data) {
+          currentPatternData = saved.data;
+          if (currentRootMeta) {
+            if (currentRootMeta.pattern_data) currentRootMeta.pattern_data = saved.data;
+            else currentRootMeta.data = saved.data;
+          }
+        }
+        renderPatternCard(currentRootMeta || { data: currentPatternData });
+      } catch (err) {
+        alert("확인 표시를 저장하지 못했어요: " + err.message);
+      }
     }
 
     // 서버의 코수 검증 결과 → 사용자에게 보여줄 안내 문구
@@ -445,9 +500,23 @@
 
       // ⚠️는 편집 대상이 아닌 체크박스 칸에 둔다.
       // (코수 칸에 넣으면 저장할 때 사용자가 입력한 값과 섞인다)
+      // 클릭하면 "확인함"으로 표시되어 경고가 사라진다.
       const warnBadge = warning
-        ? `<span class="block mt-1 text-amber-600 text-xs leading-none cursor-help" title="${buildWarningTitle(warning)}">⚠️</span>`
+        ? `<button type="button" onclick="acknowledgeStep('${path}')"
+                   class="block mx-auto mt-1 text-amber-600 text-xs leading-none hover:scale-125 transition"
+                   title="${buildWarningTitle(warning)}&#10;&#10;확인했다면 눌러서 표시를 없앨 수 있어요.">⚠️</button>`
         : "";
+
+      // 단이 시작되는 시점으로 영상 재생. 서버가 검증해 이상한 값은 0으로 지우므로
+      // 0보다 큰 값만 링크로 만든다.
+      const startSec = Number((step.timestamps || {}).start) || 0;
+      const videoUrl = currentVideoUrl();
+      const timeCell = (startSec > 0 && videoUrl)
+        ? `<a href="${videoUrl}${videoUrl.includes('?') ? '&' : '?'}t=${startSec}s"
+              target="_blank" rel="noopener noreferrer"
+              class="pdf-clickable-link text-red-600 hover:text-red-700 font-medium hover:underline"
+              title="이 단부터 영상 보기">▶ ${formatTime(startSec)}</a>`
+        : `<span class="text-slate-300">-</span>`;
 
       tr.innerHTML = `
         <td class="py-3 px-3 text-center">
@@ -455,6 +524,7 @@
           ${warnBadge}
         </td>
         <td class="py-3 px-3 text-center font-bold text-slate-700 editable" data-step-path="${path}" data-field="step_name">${rowName}</td>
+        <td class="py-3 px-3 text-center whitespace-nowrap">${timeCell}</td>
         <td class="py-3 px-3 text-center text-slate-600 font-medium editable" data-step-path="${path}" data-field="total_stitches">${stitchCount}</td>
         <td class="py-3 px-3 text-amber-700 font-mono font-medium leading-relaxed whitespace-pre-wrap editable" data-step-path="${path}" data-field="formula">${step.formula || '-'}</td>
         <td class="py-3 px-3 text-slate-600 leading-relaxed editable" data-step-path="${path}" data-field="instruction">${step.instruction || step.summary || '-'}</td>
