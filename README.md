@@ -84,7 +84,7 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 | `SUPABASE_KEY` | ✅ | — | Supabase API 키 |
 | `SUPADATA_API_KEY` | ✅ | — | 자막 수집용. 없으면 로컬 fallback만 동작 (Render에서는 실패) |
 | `GEMINI_MODEL_PASS1` | ⬜ | `gemini-3.7-flash` | 자막 → 단별 추출 |
-| `GEMINI_MODEL_PASS2` | ⬜ | `gemini-2.5-flash` | 규격화 · 코수 계산 |
+| `GEMINI_MODEL_PASS2` | ⬜ | `gemini-3.1-flash-lite` | 규격화 · 코수 계산 |
 | `GEMINI_MODEL` | ⬜ | — | 위 둘을 지정하지 않았을 때의 공통 fallback |
 
 #### Pass별로 모델을 나누는 이유
