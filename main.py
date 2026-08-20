@@ -603,12 +603,19 @@ def get_youtube_data_sync(url: str, video_id: str):
     # 3. Supadata 미설정/실패 시 Fallback (로컬 전용)
     if not transcript_text:
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
+            # youtube-transcript-api는 1.x에서 인스턴스 기반 fetch()로 바뀌었다.
+            # 정적 get_transcript()만 호출하면 최신 버전에서 AttributeError가 난다.
+            try:
+                fetched = YouTubeTranscriptApi().fetch(video_id, languages=['ko', 'en'])
+                transcript_list = fetched.to_raw_data()
+            except AttributeError:
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
+
             formatted_list = [f"[{int(item['start'])}s] {item['text']}" for item in transcript_list]
             transcript_text = "\n".join(formatted_list)
-            print(f"✅ [Fallback] YouTubeTranscriptApi 성공")
+            print(f"✅ [Fallback] YouTubeTranscriptApi 성공 ({len(transcript_text)}자)")
         except Exception as e:
-            print(f"❌ YouTubeTranscriptApi 실패 (Render IP 차단): {e}")
+            print(f"❌ YouTubeTranscriptApi 실패 (Render IP 차단 또는 자막 없음): {e}")
 
     meta_info = {
         "title": title or "유튜브 뜨개질 영상",
