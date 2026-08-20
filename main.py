@@ -679,6 +679,14 @@ def _validate_steps(steps, delta_map: dict) -> int:
         formula = (step.get("formula") or "").strip()
         expected = step.get("total_stitches")
 
+        # 사용자가 "확인했음"으로 표시한 단은 경고를 다시 띄우지 않는다.
+        # 다만 그 이후 약어나 코수가 바뀌면 확인이 무효가 되어야 하므로,
+        # 확인 당시의 값을 지문으로 저장해 두고 지금 값과 비교한다.
+        ack = step.get("validation_ack")
+        if ack and ack != f"{formula}|{expected}":
+            step.pop("validation_ack", None)
+            ack = None
+
         # 조립·마무리 단계(코수 0)나 코수 미기재는 검증 대상이 아니다
         if not isinstance(expected, int) or expected <= 0 or not formula:
             continue
@@ -688,6 +696,9 @@ def _validate_steps(steps, delta_map: dict) -> int:
         if parsed is None:
             # 사전에 없는 기법이 섞인 줄 — 틀린 경고를 내느니 검증하지 않는다
             step["validation"] = {"status": "skipped", "reason": "unknown_term"}
+        elif ack:
+            # 사람이 이미 확인한 단. 검증은 돌리되 경고로 세지 않는다.
+            step["validation"] = {"status": "acknowledged"}
         elif parsed != expected:
             step["validation"] = {
                 "status": "mismatch", "reason": "formula",
@@ -705,7 +716,9 @@ def _validate_steps(steps, delta_map: dict) -> int:
 
         # 검증에 걸린 단의 코수는 믿을 수 없으므로 기준선에서 제외한다.
         # (한 단이 틀렸다고 뒤따르는 멀쩡한 단까지 연쇄로 경고되는 것을 막는다)
-        prev_total = expected if step.get("validation") is None else None
+        # 사람이 확인한 단은 맞다고 판단된 값이므로 기준선으로 그대로 쓴다.
+        status = (step.get("validation") or {}).get("status")
+        prev_total = expected if status in (None, "acknowledged") else None
 
     return mismatch_count
 
@@ -738,6 +751,63 @@ def validate_stitch_counts(pattern_data: dict, catalog: list = None) -> dict:
     pattern_data["validation_summary"] = {"mismatch_count": mismatch_count}
     if mismatch_count:
         print(f"⚠️ 코수 불일치 {mismatch_count}건 감지")
+
+    return pattern_data
+
+
+def validate_timestamps(pattern_data: dict, duration_sec: int = 0) -> dict:
+    """단별 타임스탬프를 검증한다. 믿을 수 없는 값은 지운다.
+
+    AI는 자막의 시각을 대체로 잘 가져오지만, 뒤로 갈수록 **지어내는 경향**이 있다.
+    (실측: 48분 50초 영상인데 마지막 단이 72분 35초를 가리켰다)
+
+    잘못된 시각으로 영상을 열면 엉뚱한 장면이 나와서, 링크가 아예 없는 것보다 나쁘다.
+    그래서 의심스러우면 남기지 않고 0으로 지운다.
+      - 영상 길이를 넘는 값
+      - 앞 단보다 뒤로 가는 값 (뜨개 순서는 되돌아가지 않는다)
+    """
+    if not isinstance(pattern_data, dict):
+        return pattern_data
+
+    parts = pattern_data.get("parts")
+    groups = ([p.get("steps") for p in parts if isinstance(p, dict)]
+              if isinstance(parts, list) and parts
+              else [pattern_data.get("pattern_steps")])
+
+    kept = dropped = 0
+    previous = 0
+
+    for steps in groups:
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            ts = step.get("timestamps")
+            if not isinstance(ts, dict):
+                continue
+
+            start = ts.get("start")
+            if not isinstance(start, (int, float)) or start <= 0:
+                continue
+
+            start = int(start)
+            too_late = duration_sec and start > duration_sec
+            goes_back = start < previous
+
+            if too_late or goes_back:
+                ts["start"] = 0
+                ts["end"] = 0
+                dropped += 1
+            else:
+                previous = start
+                kept += 1
+
+    if dropped:
+        limit = f"{duration_sec // 60}분 {duration_sec % 60}초" if duration_sec else "알 수 없음"
+        print(f"⏱️ 타임스탬프 {kept}개 유지 / {dropped}개 제거 (영상 길이: {limit})")
+    elif kept:
+        print(f"⏱️ 타임스탬프 {kept}개 모두 유효")
 
     return pattern_data
 
@@ -803,6 +873,9 @@ def _fetch_meta_from_page(video_id: str) -> dict:
     channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
     if channel_match:
         meta["channel_name"] = unescape(channel_match.group(1))
+    length_match = re.search(r'"lengthSeconds":"(\d+)"', html)
+    if length_match:
+        meta["duration_sec"] = int(length_match.group(1))
 
     # 워치 페이지에는 추천 영상의 channelId도 섞여 있으므로 videoDetails 안의 값만 쓴다
     owner = re.search(r'"videoDetails"\s*:\s*\{.*?"channelId"\s*:\s*"(UC[0-9A-Za-z_-]{22})"', html, re.DOTALL) \
@@ -831,6 +904,8 @@ def _fetch_meta_from_supadata(video_id: str) -> dict:
 
     channel = data.get("channel") or {}
     meta = {}
+    if isinstance(data.get("duration"), (int, float)) and data["duration"] > 0:
+        meta["duration_sec"] = int(data["duration"])
     if data.get("title"):
         meta["title"] = data["title"]
     if data.get("description"):
@@ -965,7 +1040,8 @@ def get_youtube_data_sync(url: str, video_id: str):
         "channel_url": channel_url,
         "channel_id": channel_id,
         "channel_handle": channel_handle,
-        "thumbnail_url": thumbnail_url
+        "thumbnail_url": thumbnail_url,
+        "duration_sec": meta.get("duration_sec") or 0
     }
 
     return meta_info, transcript_text
@@ -1159,6 +1235,7 @@ async def generate_pattern(req: PatternRequest):
 
         pattern_data = sanitize_pattern_data(pattern_data)
         pattern_data = normalize_needle_type(pattern_data)
+        pattern_data = validate_timestamps(pattern_data, meta_info.get("duration_sec") or 0)
         pattern_data = validate_stitch_counts(pattern_data, catalog)
         db_title = pattern_data.get("pattern_title") or meta_info["title"]
 
@@ -1234,6 +1311,7 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest):
     try:
         sanitized_data = sanitize_pattern_data(req.pattern_data)
         sanitized_data = normalize_needle_type(sanitized_data)
+        sanitized_data = validate_timestamps(sanitized_data, 0)
         # 사용자가 코수를 고쳤을 수 있으므로 저장 시점에 다시 검증한다
         sanitized_data = validate_stitch_counts(sanitized_data, get_craft_terms_catalog())
 
