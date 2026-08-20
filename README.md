@@ -69,7 +69,7 @@ export SUPADATA_API_KEY=...
 uvicorn main:app --reload --port 8000
 ```
 
-프론트엔드는 정적 파일이므로 그대로 열면 됩니다. 단, `index.html`의 `API_BASE`가 운영 서버(`https://knotty.onrender.com`)로 고정되어 있으므로 로컬 백엔드를 붙이려면 그 값을 `http://localhost:8000`으로 바꿔야 합니다.
+프론트엔드는 정적 파일이므로 그대로 열면 됩니다. 단, `index.html`의 `API_BASE`가 운영 서버(`https://knotty-paid.onrender.com`)로 고정되어 있으므로 로컬 백엔드를 붙이려면 그 값을 `http://localhost:8000`으로 바꿔야 합니다.
 
 ```bash
 python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
@@ -126,7 +126,7 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 정식 상용 서비스가 아니라 **GitHub 기반의 가벼운 운영**을 전제로 합니다.
 
 - 프론트엔드: GitHub Pages (저장소 `hyeom0927/knotty`)
-- 백엔드: Render (`knotty.onrender.com`) — 무료 플랜은 유휴 시 슬립되어 첫 요청이 느립니다
+- 백엔드: Render (`knotty-paid.onrender.com`)
 - DB: Supabase (PostgreSQL)
 
 ---

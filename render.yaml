@@ -1,0 +1,41 @@
+# Render 배포 설정
+#
+# 이 파일이 있으면 Render에서 Blueprint로 한 번에 만들 수 있고,
+# 수동으로 만들더라도 아래 값을 그대로 옮겨 적으면 됩니다.
+#
+# 대시보드에서 직접 설정할 때:
+#   New + → Web Service → GitHub 저장소 hyeom0927/knotty 연결
+#   Branch        : main
+#   Root Directory: (비움 — 저장소 루트)
+#   Runtime       : Python 3
+#   Build Command : pip install -r requirements.txt
+#   Start Command : uvicorn main:app --host 0.0.0.0 --port $PORT
+#   Auto-Deploy   : Yes  (main에 push하면 자동 배포)
+
+services:
+  - type: web
+    name: knotty-paid
+    runtime: python
+    plan: starter
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    # $PORT는 Render가 넘겨줍니다. 포트를 고정하면 서비스가 뜨지 않습니다.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+    envVars:
+      # sync: false = 값을 저장소에 두지 않고 대시보드에서 직접 입력
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPADATA_API_KEY
+        sync: false
+      # 모델은 공개해도 되는 값이라 여기에 둡니다
+      - key: GEMINI_MODEL_PASS1
+        value: gemini-3.7-flash
+      - key: GEMINI_MODEL_PASS2
+        value: gemini-2.5-flash
+      - key: PYTHON_VERSION
+        value: "3.12"
