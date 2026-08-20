@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="672" height="384" viewBox="0 0 672 384">
+<rect width="672" height="384" fill="#ffffff"/>
+<rect x="4" y="4" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(26,12) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <ellipse cx="12" cy="12" rx="9" ry="5"/>
+</g>
+<text x="48.0" y="84" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">ch</text>
+<rect x="100" y="4" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(122,12) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="4.5" fill="#0f172a" stroke="none"/>
+</g>
+<text x="144.0" y="84" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">sl_st</text>
+<rect x="196" y="4" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(218,12) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 6 18 18"/>
+  <path d="M18 6 6 18"/>
+</g>
+<text x="240.0" y="84" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">sc</text>
+<rect x="292" y="4" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(314,12) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 3h14"/>
+  <path d="M12 3v18"/>
+</g>
+<text x="336.0" y="84" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">hdc</text>
+<rect x="388" y="4" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(410,12) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 3h14"/>
+  <path d="M12 3v18"/>
+  <path d="M8 14l8-4"/>
+</g>
+<text x="432.0" y="84" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">dc</text>
+<rect x="484" y="4" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(506,12) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 3h14"/>
+  <path d="M12 3v18"/>
+  <path d="M8 11l8-4"/>
+  <path d="M8 17l8-4"/>
+</g>
+<text x="528.0" y="84" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">tr</text>
+<rect x="580" y="4" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(602,12) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 3h14"/>
+  <path d="M12 3v18"/>
+  <path d="M8 9l8-4"/>
+  <path d="M8 14l8-4"/>
+  <path d="M8 19l8-4"/>
+</g>
+<text x="624.0" y="84" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">dtr</text>
+<rect x="4" y="100" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(26,108) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="10" r="7"/>
+  <path d="M12 17v4"/>
+</g>
+<text x="48.0" y="180" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">mr</text>
+<rect x="100" y="100" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(122,108) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 4 12 20 19 4"/>
+</g>
+<text x="144.0" y="180" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">inc</text>
+<rect x="196" y="100" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(218,108) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 20 12 4 19 20"/>
+</g>
+<text x="240.0" y="180" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">dec</text>
+<rect x="292" y="100" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(314,108) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 20 12 4 20 20"/>
+  <path d="M12 4v16"/>
+</g>
+<text x="336.0" y="180" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">sc3tog</text>
+<rect x="388" y="100" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(410,108) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7 5 12 20 17 5"/>
+  <path d="M4 5h6"/>
+  <path d="M14 5h6"/>
+</g>
+<text x="432.0" y="180" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">dc_inc</text>
+<rect x="484" y="100" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(506,108) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 20 12 7 18 20"/>
+  <path d="M12 7V4"/>
+  <path d="M6 4h12"/>
+</g>
+<text x="528.0" y="180" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">dc2tog</text>
+<rect x="580" y="100" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(602,108) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 20 12 7 20 20"/>
+  <path d="M12 20V4"/>
+  <path d="M4 4h16"/>
+</g>
+<text x="624.0" y="180" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">dc3tog</text>
+<rect x="4" y="196" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(26,204) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 4c-5 3-5 13 0 16"/>
+  <path d="M12 4c5 3 5 13 0 16"/>
+  <path d="M12 4v16"/>
+</g>
+<text x="48.0" y="276" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">puff</text>
+<rect x="100" y="196" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(122,204) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 4h12"/>
+  <path d="M12 4c-5 3-5 13 0 16"/>
+  <path d="M12 4c5 3 5 13 0 16"/>
+  <path d="M12 4v16"/>
+</g>
+<text x="144.0" y="276" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">bobble</text>
+<rect x="196" y="196" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(218,204) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 4h12"/>
+  <path d="M12 4c-6 3-6 13 0 16 6-3 6-13 0-16Z"/>
+</g>
+<text x="240.0" y="276" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">popcorn</text>
+<rect x="292" y="196" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(314,204) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 3h14"/>
+  <path d="M12 3v11c0 4 3 6 6 5"/>
+  <path d="M8 12l8-4"/>
+</g>
+<text x="336.0" y="276" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">fpdc</text>
+<rect x="388" y="196" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(410,204) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 3h14"/>
+  <path d="M12 3v11c0 4-3 6-6 5"/>
+  <path d="M8 12l8-4"/>
+</g>
+<text x="432.0" y="276" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">bpdc</text>
+<rect x="484" y="196" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(506,204) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 9h16"/>
+  <path d="M4 16h16"/>
+  <circle cx="12" cy="9" r="2.2" fill="#0f172a" stroke="none"/>
+</g>
+<text x="528.0" y="276" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">flo</text>
+<rect x="580" y="196" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(602,204) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 9h16"/>
+  <path d="M4 16h16"/>
+  <circle cx="12" cy="16" r="2.2" fill="#0f172a" stroke="none"/>
+</g>
+<text x="624.0" y="276" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">blo</text>
+<rect x="4" y="292" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(26,300) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M19 5H6"/>
+  <path d="M9 2 6 5l3 3"/>
+  <path d="M8 11 16 19"/>
+  <path d="M16 11 8 19"/>
+</g>
+<text x="48.0" y="372" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">crab</text>
+<rect x="100" y="292" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(122,300) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3v18"/>
+</g>
+<text x="144.0" y="372" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">k</text>
+<rect x="196" y="292" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(218,300) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 12h18"/>
+</g>
+<text x="240.0" y="372" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">p</text>
+<rect x="292" y="292" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(314,300) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="6"/>
+</g>
+<text x="336.0" y="372" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">yo</text>
+<rect x="388" y="292" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(410,300) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 19 18 5"/>
+</g>
+<text x="432.0" y="372" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">k2tog</text>
+<rect x="484" y="292" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(506,300) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M18 19 6 5"/>
+</g>
+<text x="528.0" y="372" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">ssk</text>
+<rect x="580" y="292" width="88" height="88" fill="none" stroke="#e2e8f0"/>
+<g transform="translate(602,300) scale(2)" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 18h18"/>
+  <path d="M5 18a3.5 3.5 0 0 1 7 0"/>
+  <path d="M12 18a3.5 3.5 0 0 1 7 0"/>
+</g>
+<text x="624.0" y="372" font-family="Helvetica" font-size="11" fill="#334155" text-anchor="middle">co</text>
+</svg>

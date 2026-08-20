@@ -230,16 +230,31 @@ def get_craft_terms_catalog(force: bool = False) -> list:
         return cached or []
 
 
+def is_stitch_term(term: dict) -> bool:
+    """도안 약어로 쓰이는 기법인지 여부.
+
+    craft_terms에는 약어가 없는 '과정'도 들어간다(배색, 돗바늘 마무리 등).
+    이런 항목까지 프롬프트에 주입하면 AI가 formula에 적어 넣어 도안 약어가 오염된다.
+    entry_type 컬럼이 없는 경우(구 스키마)는 모두 약어로 간주한다.
+    """
+    return (term.get("entry_type") or "stitch").strip().lower() != "technique"
+
+
 def build_terms_catalog_text(catalog: list) -> str:
-    """기법 사전을 Pass 2 프롬프트에 넣을 텍스트 목록으로 변환"""
+    """기법 사전을 Pass 2 프롬프트에 넣을 텍스트 목록으로 변환
+
+    용어사전 전용 항목(entry_type='technique')은 제외한다.
+    """
     lines = []
     for term in catalog:
         code = (term.get("standard_code") or "").strip()
-        if not code:
+        if not code or not is_stitch_term(term):
             continue
-        kr = (term.get("kr_formal") or "").strip()
-        needle = (term.get("needle_type") or "").strip()  # 선택 컬럼
-        suffix = f" [{needle}]" if needle else ""
+        kr = (term.get("kr_name") or "").strip()
+        # craft_terms.craft_type: crochet / knitting
+        craft = (term.get("craft_type") or term.get("needle_type") or "").strip().lower()
+        label = {"crochet": "코바늘", "knitting": "대바늘"}.get(craft, craft)
+        suffix = f" [{label}]" if label else ""
         lines.append(f"- {code} : {kr}{suffix}")
     return "\n".join(lines)
 
@@ -256,11 +271,16 @@ def get_matching_craft_terms(pattern_data: dict, catalog: list = None) -> list:
         matched_terms = []
         for term in all_terms:
             code = term.get("standard_code")
-            if code and re.search(rf"\b{re.escape(code)}\b", full_pattern_str, re.IGNORECASE):
+            # `sl_st`로 등록된 기법이 도안에 `sl st`로 적혀 있어도 매칭되게 한다
+            if code and re.search(_code_to_regex(code), full_pattern_str, re.IGNORECASE):
                 matched_terms.append({
                     "standard_code": term.get("standard_code"),
-                    "kr_formal": term.get("kr_formal"),
-                    "video_url": term.get("video_url")
+                    "kr_name": term.get("kr_name"),
+                    "video_url": term.get("video_url"),
+                    # 도안 기호: 유니코드 글자(symbol_icon) 또는 기호 이미지(thumbnail_url)
+                    "symbol_icon": term.get("symbol_icon"),
+                    "thumbnail_url": term.get("thumbnail_url"),
+                    "description": term.get("description")
                 })
 
         return matched_terms
@@ -311,19 +331,77 @@ def record_unknown_terms(unknown_terms, pattern_id: str = None):
 
 # 기법 1개가 편물에 남기는 코의 수.
 # craft_terms에 stitch_delta 컬럼이 있으면 그 값이 이 기본값을 덮어쓴다.
+# 키는 _normalize_code()를 거친 형태(소문자, 언더스코어 → 공백)로 적는다.
+# craft_terms.stitch_delta가 있으면 그 값이 이 기본값을 덮어쓴다.
+# 여기에도 등록해 두는 이유는 사전 조회가 실패해도 검증이 멈추지 않게 하기 위함이다.
 DEFAULT_STITCH_DELTA = {
+    # 코바늘 — 기본
     "ch": 1,      # 기둥사슬로 쓰인 경우는 아래에서 0으로 처리
     "sc": 1, "hdc": 1, "dc": 1, "tr": 1, "dtr": 1,
-    "inc": 2,     # 한 코에 2번 → 1코 증가
-    "dec": 1,     # 2코를 1코로 → 1코 감소
     "sl st": 0, "ss": 0,
     "mr": 0, "mc": 0,
+    # 코바늘 — 늘림·줄임
+    "inc": 2,     # 한 코에 2번 → 1코 증가
+    "dec": 1,     # 2코를 1코로 → 1코 감소
+    "sc3tog": 1,
+    "dc inc": 2,  # standard_code `dc_inc`
+    "dc2tog": 1, "dc3tog": 1,
+    # 코바늘 — 무늬·마무리 (한 코를 먹고 한 코를 남김)
+    "puff": 1, "bobble": 1, "popcorn": 1,
+    "fpdc": 1, "bpdc": 1, "crab": 1,
+    # 코바늘 — 뜨는 위치 지정 (코를 만들지 않음)
+    "flo": 0, "blo": 0,
+    # 대바늘
+    "k": 1, "p": 1,
+    "yo": 1,          # 바늘비우기 → 1코 증가
+    "k2tog": 1, "ssk": 1, "p2tog": 1,
+    "kfb": 2,
+    "co": 1,          # 코잡기 N개 → N코
+    # bo(코막음)는 일부러 넣지 않는다. 코를 없애는 기법이라 잘못 세면 오탐이 난다 → skipped 처리
 }
 
-CROCHET_CODES = {"sc", "hdc", "dc", "tr", "dtr", "mr", "sl st", "ch"}
+CROCHET_CODES = {"sc", "hdc", "dc", "tr", "dtr", "mr", "sl st", "ch", "inc", "dec"}
 KNIT_CODES = {"k", "p", "k2tog", "p2tog", "ssk", "yo", "co", "bo", "kfb"}
 
-_TOKEN_RE = re.compile(r"^([a-z][a-z ]*?)\s*(\d+)?$")
+# 코수를 바꾸는 기법 (연속성 검사에서 제외 대상)
+#
+# 기법 목록을 하드코딩하면 사전에 새 기법이 추가될 때마다 여기가 뒤처진다.
+# (sc3tog, dc2tog, dc_inc 등이 실제로 누락되어 멀쩡한 단이 경고를 받았다)
+# 그래서 뜨개 약어의 작명 관례로 판별한다.
+#   ~tog  : 여러 코를 하나로 모으는 줄임  (sc2tog, dc3tog, k2tog …)
+#   ~inc  : 늘림                          (inc, dc_inc …)
+#   그 외 : dec / ssk / yo / kfb / co / bo
+#   `sc 3 in 1 st` 처럼 한 코에 여러 번 뜨는 표기도 코수를 늘린다.
+_COUNT_CHANGING = re.compile(
+    r"\b\w*tog\b"
+    r"|\b\w*inc\b"
+    r"|\b(dec|ssk|yo|kfb|co|bo)\b"
+    r"|\bin\s+\d+\s*sts?\b",
+    re.IGNORECASE
+)
+
+# 기법 코드는 숫자·언더스코어를 포함할 수 있다 (k2tog, sl_st).
+# 뒤에 공백으로 떨어진 숫자만 개수로 해석한다.
+_TOKEN_WITH_COUNT = re.compile(r"^([a-z][a-z0-9_ ]*?)\s+(\d+)$")
+# 개수 없이 기법만 적히는 경우(`sl st`, `mr`). 여러 단어로 된 코드도 허용한다.
+_TOKEN_ALONE = re.compile(r"^([a-z][a-z0-9_ ]*)$")
+# "sc 3 in 1 st" — 한 코에 여러 번 뜨는 표기. 실제 도안에 자주 등장한다.
+_TOKEN_IN_ONE = re.compile(r"^([a-z][a-z0-9_ ]*?)\s+(\d+)\s+in\s+\d+\s*sts?$")
+
+
+def _normalize_code(code: str) -> str:
+    """`sl_st` / `sl st` / `SL  ST` 를 같은 코드로 취급한다.
+
+    craft_terms의 standard_code는 `sl_st`인데 도안 표기는 `sl st`라
+    정규화하지 않으면 빼뜨기가 들어간 단이 전부 검증에서 빠진다.
+    """
+    return re.sub(r"[\s_]+", " ", (code or "").strip().lower())
+
+
+def _code_to_regex(code: str) -> str:
+    """`sl_st`와 `sl st`를 모두 잡는 정규식으로 변환"""
+    parts = [re.escape(p) for p in re.split(r"[\s_]+", code.strip()) if p]
+    return r"\b" + r"[\s_]+".join(parts) + r"\b"
 
 
 def _split_top_level(text: str) -> list:
@@ -345,11 +423,22 @@ def _split_top_level(text: str) -> list:
     return [p.strip() for p in parts if p.strip()]
 
 
+def _parse_plain_token(token: str):
+    """단일 토큰을 (코드, 개수)로 분해. 해석 불가 시 None"""
+    text = token.strip().lower()
+    for pattern in (_TOKEN_IN_ONE, _TOKEN_WITH_COUNT):
+        match = pattern.match(text)
+        if match:
+            return _normalize_code(match.group(1)), int(match.group(2))
+    match = _TOKEN_ALONE.match(text)
+    if match:
+        return _normalize_code(match.group(1)), 1
+    return None
+
+
 def _token_code(token: str) -> str:
-    match = _TOKEN_RE.match(token.strip().lower())
-    if not match:
-        return ""
-    return re.sub(r"\s+", " ", match.group(1).strip())
+    parsed = _parse_plain_token(token)
+    return parsed[0] if parsed else ""
 
 
 def _parse_token(token: str, delta_map: dict):
@@ -380,12 +469,11 @@ def _parse_token(token: str, delta_map: dict):
             return None
         return inner_total * int(repeat_match.group(1))
 
-    match = _TOKEN_RE.match(token.lower())
-    if not match:
+    parsed = _parse_plain_token(token)
+    if not parsed:
         return None
 
-    code = re.sub(r"\s+", " ", match.group(1).strip())
-    count = int(match.group(2)) if match.group(2) else 1
+    code, count = parsed
     if code not in delta_map:
         return None
     return delta_map[code] * count
@@ -428,7 +516,7 @@ def _parse_sequence(text: str, delta_map: dict, is_row_start: bool = False):
 def _row_can_change_stitch_count(text: str) -> bool:
     """이 단이 코수를 바꿀 수 있는 요소(늘림·줄임·행 중간 사슬)를 포함하는가"""
     lowered = text.lower()
-    if re.search(r"\b(inc|dec)\b", lowered):
+    if _COUNT_CHANGING.search(lowered):
         return True
 
     tokens = _split_top_level(lowered)
@@ -507,7 +595,7 @@ def validate_stitch_counts(pattern_data: dict, catalog: list = None) -> dict:
 
     delta_map = dict(DEFAULT_STITCH_DELTA)
     for term in (catalog or []):
-        code = (term.get("standard_code") or "").strip().lower()
+        code = _normalize_code(term.get("standard_code"))
         delta = term.get("stitch_delta")  # 선택 컬럼
         if code and isinstance(delta, int) and not isinstance(delta, bool):
             delta_map[code] = delta
@@ -553,8 +641,8 @@ def normalize_needle_type(pattern_data: dict) -> dict:
         # 표현이 모호하면 도안에 쓰인 약어로 추론한다
         formulas = " ".join(re.findall(r'"formula"\s*:\s*"([^"]*)"',
                                        json.dumps(pattern_data, ensure_ascii=False))).lower()
-        crochet_hits = sum(1 for c in CROCHET_CODES if re.search(rf"\b{re.escape(c)}\b", formulas))
-        knit_hits = sum(1 for c in KNIT_CODES if re.search(rf"\b{re.escape(c)}\b", formulas))
+        crochet_hits = sum(1 for c in CROCHET_CODES if re.search(_code_to_regex(c), formulas))
+        knit_hits = sum(1 for c in KNIT_CODES if re.search(_code_to_regex(c), formulas))
 
         if crochet_hits > knit_hits:
             needle["type"] = "코바늘"
@@ -568,6 +656,7 @@ def normalize_needle_type(pattern_data: dict) -> dict:
 def get_youtube_data_sync(url: str, video_id: str):
     """유튜브 메타데이터 수집 및 Supadata API 기반 자막 수집"""
     title, description, channel_name, channel_url = "", "", "", ""
+    channel_id, channel_handle = "", ""
     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
     # 1. 페이지 직접 파싱을 통한 메타데이터 추출
@@ -593,14 +682,24 @@ def get_youtube_data_sync(url: str, video_id: str):
             if channel_match:
                 channel_name = channel_match.group(1)
 
-            # 채널 URL 추출 — creators 테이블의 중복 방지 키(UNIQUE)로 사용됨.
+            # 채널 식별자 추출 — creators 테이블의 중복 방지 키로 사용됨.
             # 핸들(@name)은 변경될 수 있으므로 불변인 channelId를 우선한다.
-            channel_id_match = re.search(r'"channelId":"(UC[0-9A-Za-z_-]{22})"', html)
-            if channel_id_match:
-                channel_url = f"https://www.youtube.com/channel/{channel_id_match.group(1)}"
-            else:
-                handle_match = re.search(r'"canonicalBaseUrl":"(/@[^"]+)"', html)
-                if handle_match:
+            #
+            # 워치 페이지에는 추천 영상들의 channelId도 함께 들어 있으므로,
+            # 반드시 videoDetails 블록 안의 값을 써야 남의 채널로 저장되지 않는다.
+            owner_match = re.search(
+                r'"videoDetails"\s*:\s*\{.*?"channelId"\s*:\s*"(UC[0-9A-Za-z_-]{22})"',
+                html, re.DOTALL
+            ) or re.search(r'"externalChannelId"\s*:\s*"(UC[0-9A-Za-z_-]{22})"', html)
+
+            if owner_match:
+                channel_id = owner_match.group(1)
+                channel_url = f"https://www.youtube.com/channel/{channel_id}"
+
+            handle_match = re.search(r'"canonicalBaseUrl":"(/@[^"]+)"', html)
+            if handle_match:
+                channel_handle = handle_match.group(1).lstrip("/")
+                if not channel_url:
                     channel_url = f"https://www.youtube.com{handle_match.group(1)}"
     except Exception as e:
         print(f"⚠️ 페이지 파싱 경고: {e}")
@@ -656,6 +755,8 @@ def get_youtube_data_sync(url: str, video_id: str):
         "description": description,
         "channel_name": channel_name or "유튜브 채널",
         "channel_url": channel_url,
+        "channel_id": channel_id,
+        "channel_handle": channel_handle,
         "thumbnail_url": thumbnail_url
     }
 
@@ -769,13 +870,26 @@ async def generate_pattern(req: PatternRequest):
         creator_id = None
         creator_record = None
         if meta_info["channel_url"]:
-            creator_res = supabase.table("creators").upsert(
-                {
-                    "channel_name": meta_info["channel_name"] or "미상 채널",
-                    "channel_url": meta_info["channel_url"]
-                },
-                on_conflict="channel_url"
-            ).execute()
+            base_payload = {
+                "channel_name": meta_info["channel_name"] or "미상 채널",
+                "channel_url": meta_info["channel_url"]
+            }
+            full_payload = dict(base_payload)
+            if meta_info.get("channel_id"):
+                full_payload["channel_id"] = meta_info["channel_id"]
+            if meta_info.get("channel_handle"):
+                full_payload["channel_handle"] = meta_info["channel_handle"]
+
+            try:
+                creator_res = supabase.table("creators").upsert(
+                    full_payload, on_conflict="channel_url"
+                ).execute()
+            except Exception as e:
+                # channel_id / channel_handle 컬럼이 아직 없는 스키마에서도 동작하도록
+                print(f"⚠️ creators 확장 필드 저장 실패 — 기본 필드로 재시도: {e}")
+                creator_res = supabase.table("creators").upsert(
+                    base_payload, on_conflict="channel_url"
+                ).execute()
 
             if creator_res.data and len(creator_res.data) > 0:
                 creator_record = creator_res.data[0]
