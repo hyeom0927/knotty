@@ -341,20 +341,18 @@
                </a>`
             : `<span class="text-slate-300">-</span>`;
 
-          // 도안 기호: 이미지 → 유니코드 글자 → '-' 순으로 표시.
-          // thumbnail_url은 'symbols/sc.svg' 같은 상대 경로라 formatUrl(https:// 자동 부착)을
-          // 쓰면 안 된다. 외부 URL이면 그대로 두고, 상대 경로면 앞의 ./ 만 정리한다.
+          // 도안 기호 이미지. thumbnail_url은 'symbols/sc.svg' 같은 상대 경로라
+          // formatUrl(https:// 자동 부착)을 쓰면 안 된다.
+          // 외부 URL이면 그대로 두고, 상대 경로면 앞의 ./ 만 정리한다.
           const rawSymbol = (term.thumbnail_url || "").trim();
           const symbolSrc = /^https?:\/\//i.test(rawSymbol) ? rawSymbol : rawSymbol.replace(/^\.?\//, "");
-          const glyphClass = term.symbol_icon ? "text-base leading-none text-slate-700" : "text-slate-300";
-          const glyphText = term.symbol_icon || "-";
-          // 이미지가 없거나 로딩에 실패하면 유니코드 글자로 되돌아간다
+          // 이미지가 없거나 로딩에 실패하면 '-'로 되돌아간다
           const symbolCell = symbolSrc
             ? `<img src="${symbolSrc}" alt="${term.kr_name || ''} 기호"
                     class="w-6 h-6 mx-auto object-contain"
                     onerror="this.style.display='none'; this.nextElementSibling.classList.remove('hidden')"
-               ><span class="hidden ${glyphClass}">${glyphText}</span>`
-            : `<span class="${glyphClass}">${glyphText}</span>`;
+               ><span class="hidden text-slate-300">-</span>`
+            : `<span class="text-slate-300">-</span>`;
 
           const tip = term.description ? ` title="${term.description.replace(/"/g, '&quot;')}"` : "";
 
