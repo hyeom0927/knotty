@@ -63,6 +63,9 @@ Pass 1 데이터에서 단별 동작을 받아 표준 영문 약어 변환, 정�
 
 3. **표준 약어 변환 (`formula`) 및 텍스트 정제 규칙 (엄격 준수)**:
    - `summary` 내용에서 뜨개 기법을 추출하여 표준 영문 약어(`ch`, `sc`, `inc`, `dec`, `hdc`, `dc`, `mr`, `sl st`)로 변환하세요.
+   - **[중요] 아래에 `[사용 가능한 기법 목록]`이 주어진 경우, `formula`에는 그 목록에 있는 약어만 사용하세요.**
+     목록에 없는 기법이 등장하면 임의의 약어를 새로 만들지 말고, 해당 동작은 `instruction`에 한국어로 서술한 뒤
+     그 기법의 원문 표현을 루트의 `unknown_terms` 배열에 담으세요.
    - **불필요 괄호 제거 (중요)**: `formula`(약어) 작성 시 "(does not count as st)", "(코로 세지 않음)" 등의 부연설명 괄호 문구는 절대로 포함하지 마시고, 순수 기법 공식(`ch 2, dc 1, hdc 2`)만 남기세요.
    - **기둥사슬 표현 정제**: 기둥사슬은 기본적으로 코수에 포함하지 않는 것으로 간주하므로, `instruction`(상세설명)에서도 반복적인 "(코로 세지 않음)" 문구는 생략하세요.
    - **공백 규칙**: 모든 약어와 숫자 사이에는 반드시 공백 1칸을 둡니다. (올바른 예: `ch 1, sc 3, inc 1` / 잘못된 예: `ch1, sc3`, `3 1, sc`)
@@ -73,14 +76,24 @@ Pass 1 데이터에서 단별 동작을 받아 표준 영문 약어 변환, 정�
 4. **total_rows 정밀 계산**:
    - `total_rows`는 **배열의 개수(step 수)가 아니라, 뜨개 파츠 중 가장 단수가 많은 주요 파츠의 최대 단수**를 기재하세요. (예: 몸판 33단, 밑판 36단인 경우 최대 단수인 36)
 
+5. **바늘 종류 제한 (엄격)**:
+   - `materials.needle.type`에는 반드시 **`코바늘` 또는 `대바늘` 둘 중 하나만** 기재하세요.
+   - "니들", "hook", "5mm 바늘" 같은 표현이나 호수 정보를 `type`에 넣지 마세요. 호수·굵기는 `size`에만 기재합니다.
+
+6. **코수 정합성 (필수 자체 검산)**:
+   - `total_stitches`는 **그 단을 다 뜨고 났을 때 편물에 남는 코의 개수**입니다.
+   - `formula`를 스스로 계산해 보고 코수와 맞는지 검산하세요. (`inc` 1개 = 2코, `dec` 1개 = 2코를 1코로, 기둥사슬 `ch`와 `sl st`는 코수에 포함하지 않음)
+   - 늘림(`inc`)도 줄임(`dec`)도 없는 단이라면 코수는 **직전 단과 같아야 합니다.**
+
 [최종 JSON Schema]
 {
   "pattern_title": "작품 이름",
   "materials": {
     "yarn": "실 이름 및 소요량",
-    "needle": { "type": "코바늘", "size": "3/0호(2.3mm)" },
+    "needle": { "type": "코바늘 또는 대바늘", "size": "3/0호(2.3mm)" },
     "accessories": ["부자재 리스트"]
   },
+  "unknown_terms": ["기법 목록에 없어서 약어로 옮기지 못한 기법의 원문 표현"],
   "total_rows": 핵심 파츠의 최대 단수(정수, 예: 36),
   "parts": [
     {
@@ -102,3 +115,27 @@ Pass 1 데이터에서 단별 동작을 받아 표준 영문 약어 변환, 정�
 
 def build_user_prompt(title: str, description: str, transcript: str) -> str:
     return f"[영상 제목]\n{title}\n\n[설명란]\n{description}\n\n[자막]\n{transcript}".strip()
+
+
+def build_pass2_system_prompt(terms_catalog_text: str = "") -> str:
+    """craft_terms 테이블의 기법 목록을 Pass 2 시스템 프롬프트에 주입한다.
+
+    도안에 쓰이는 약어를 사전(craft_terms)과 일치시키기 위한 장치.
+    목록이 비어 있으면(테이블 미구성/조회 실패) 기존 프롬프트를 그대로 사용한다.
+    """
+    if not terms_catalog_text:
+        return PASS2_REFINER_PROMPT
+
+    return f"""{PASS2_REFINER_PROMPT}
+
+[사용 가능한 기법 목록]
+아래는 이 서비스가 관리하는 기법 사전의 전부입니다.
+`formula`에는 이 목록의 약어(왼쪽 값)만 사용하세요.
+
+{terms_catalog_text}
+
+목록에 없는 기법을 만나면:
+1. `formula`에 새 약어를 지어내지 마세요.
+2. 그 동작은 `instruction`에 한국어로 풀어서 서술하세요.
+3. 자막에 등장한 원문 표현을 루트의 `unknown_terms` 배열에 담으세요. (예: "unknown_terms": ["팝콘뜨기"])
+목록에 없는 기법이 하나도 없다면 `unknown_terms`는 빈 배열 `[]`로 두세요."""
