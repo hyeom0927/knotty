@@ -75,13 +75,47 @@ class PatternUpdateRequest(BaseModel):
 # 3. 유틸리티, 텍스트 전처리 및 AI 추출 함수
 # ==========================================
 
+_VIDEO_ID = r"[0-9A-Za-z_-]{11}"
+
+# 유튜브 주소는 형태가 다양하다. 재생목록·공유 파라미터·shorts·live·모바일·youtu.be 등
+# 어떤 형태로 들어와도 같은 영상이면 같은 ID로 수렴해야 캐시가 새지 않는다.
+_VIDEO_ID_PATTERNS = [
+    re.compile(rf"[?&]v=({_VIDEO_ID})(?![0-9A-Za-z_-])"),            # watch?v= / ?list=…&v=
+    re.compile(rf"youtu\.be/({_VIDEO_ID})(?![0-9A-Za-z_-])"),        # 단축 주소
+    re.compile(rf"/(?:embed|shorts|live|v)/({_VIDEO_ID})(?![0-9A-Za-z_-])"),
+]
+_BARE_VIDEO_ID = re.compile(rf"^{_VIDEO_ID}$")
+
+
 def extract_video_id(url: str) -> str:
-    """유튜브 URL에서 11자리 비디오 ID 추출"""
-    regex = r"(?:v=|\/([0-9A-Za-z_-]{11}).*|list=|\/embed\/|\/v\/|https:\/\/youtu\.be\/)([^#\&\?]*)"
-    match = re.search(regex, url)
-    if match:
-        return match.group(2) if len(match.group(2)) == 11 else match.group(1)
-    raise ValueError("올바른 유튜브 URL 형식이 아닙니다.")
+    """유튜브 주소(또는 ID)에서 11자리 비디오 ID를 추출한다.
+
+    인식 실패 시 None을 돌려주지 않고 ValueError를 던진다.
+    (예전 정규식은 `watch?list=…&v=ID` 형태에서 조용히 None을 반환해
+     이후 단계가 잘못된 값으로 진행되었다)
+    """
+    text = (url or "").strip()
+    if not text:
+        raise ValueError("유튜브 주소를 입력해 주세요.")
+
+    if _BARE_VIDEO_ID.match(text):
+        return text
+
+    # 주소 형태인데 유튜브 도메인이 아니면 거부
+    if ("://" in text or "/" in text) and "youtu" not in text.lower():
+        raise ValueError("유튜브 영상 주소가 아닙니다.")
+
+    for pattern in _VIDEO_ID_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+
+    raise ValueError("유튜브 영상 주소를 인식할 수 없습니다. 영상 링크를 다시 확인해 주세요.")
+
+
+def canonical_youtube_url(video_id: str) -> str:
+    """저장·표시에 쓰는 표준 주소. 재생 위치(t=)나 재생목록 파라미터를 제거한다."""
+    return f"https://www.youtube.com/watch?v={video_id}"
 
 def call_gemini_with_retry(model_name: str, contents: str, config: types.GenerateContentConfig, max_retries: int = 3):
     """503(서버 혼잡) / 429(호출량 초과) 발생 시 지수 대기 후 재시도하는 래퍼
@@ -693,9 +727,23 @@ def call_gemini_pass2_sync(intermediate_json_str: str, meta_info: dict, system_p
 async def generate_pattern(req: PatternRequest):
     try:
         url = req.youtube_url.strip()
-        
-        # 1. DB 캐시 확인
-        existing = supabase.table("patterns").select("*, creators(*)").eq("youtube_url", url).execute()
+
+        # 0. 주소 해석 (여기서 걸러야 잘못된 입력이 DB·AI까지 내려가지 않는다)
+        try:
+            video_id = extract_video_id(url)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+
+        canonical_url = canonical_youtube_url(video_id)
+
+        # 1. DB 캐시 확인 — 주소 원문이 아니라 video_id로 조회한다.
+        #    `&t=1189s`, `&list=…`, youtu.be 단축 주소가 붙어도 같은 영상이면 캐시가 맞는다.
+        existing = supabase.table("patterns").select("*, creators(*)").eq("video_id", video_id).execute()
+
+        # 구버전에 주소 원문으로 저장된 레코드가 있으면 그것도 재사용 (불필요한 AI 호출 방지)
+        if not existing.data:
+            existing = supabase.table("patterns").select("*, creators(*)").eq("youtube_url", url).execute()
+
         if existing.data and len(existing.data) > 0:
             cached_record = existing.data[0]
             pattern_data = cached_record["pattern_data"]
@@ -712,10 +760,9 @@ async def generate_pattern(req: PatternRequest):
                 "is_cached": True
             }
 
-        print(f"🔍 [New Request] 분석 시작: {url}")
-        video_id = extract_video_id(url)
-        
-        meta_info, transcript = await asyncio.to_thread(get_youtube_data_sync, url, video_id)
+        print(f"🔍 [New Request] 분석 시작: {canonical_url}")
+
+        meta_info, transcript = await asyncio.to_thread(get_youtube_data_sync, canonical_url, video_id)
         meta_info["video_id"] = video_id
 
         # 2. creators 테이블 저장/업데이트 (channel_url 기준 중복 방지)
@@ -769,7 +816,7 @@ async def generate_pattern(req: PatternRequest):
 
         # 4. patterns 테이블에 저장
         insert_res = supabase.table("patterns").insert({
-            "youtube_url": url,
+            "youtube_url": canonical_url,   # 파라미터를 제거한 표준 주소로 저장
             "video_id": video_id,
             "title": db_title,
             "thumbnail_url": meta_info["thumbnail_url"],
@@ -819,6 +866,8 @@ async def get_pattern_by_id(pattern_id: str):
             "status": "success",
             "data": record
         }
+    except HTTPException:
+        raise   # 404를 500으로 덮어쓰지 않는다
     except Exception as e:
         print(f"❌ Error in GET /api/pattern: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -846,6 +895,8 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest):
             "pattern_id": pattern_id,
             "data": sanitized_data
         }
+    except HTTPException:
+        raise   # 404를 500으로 덮어쓰지 않는다
     except Exception as e:
         print(f"❌ Error in PUT /api/pattern: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -11,8 +11,8 @@ Supabase(PostgreSQL) 테이블 구조, 도안 JSON 스키마, 그리고 **기법
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
 | `id` | uuid (PK) | 공유 링크 `?id=`에 그대로 쓰임 |
-| `youtube_url` | text | **캐시 키.** 동일 URL 요청 시 AI를 호출하지 않고 이 레코드를 반환 |
-| `video_id` | text | 11자리 유튜브 ID |
+| `youtube_url` | text | 표시·공유용 표준 주소. `https://www.youtube.com/watch?v={id}` 형태로 정규화되어 저장됨 |
+| `video_id` | text | 11자리 유튜브 ID. **캐시 키** — 동일 영상 요청 시 AI를 호출하지 않고 이 레코드를 반환 |
 | `title` | text | `pattern_data.pattern_title` 우선, 없으면 영상 제목 |
 | `thumbnail_url` | text | `img.youtube.com/vi/{id}/hqdefault.jpg` |
 | `creator_id` | uuid (FK → creators) | ⚠️ 현재 항상 `null` — `ROADMAP.md` P0-2 참고 |
@@ -25,9 +25,11 @@ Supabase(PostgreSQL) 테이블 구조, 도안 JSON 스키마, 그리고 **기법
 | `view_count` | int, 기본 0. 게시판·인기 도안 정렬용 (P3-2) |
 | `created_at` | timestamptz. 최신순 정렬용 |
 
-> `youtube_url`을 캐시 키로 쓰므로 **유니크 인덱스**가 있어야 합니다.
-> 같은 영상이라도 `&t=6057s` 같은 파라미터가 붙으면 다른 URL로 취급되어 중복 생성됩니다.
-> → 저장·조회 시 `video_id` 기준으로 정규화하는 편이 안전합니다.
+> **캐시는 `video_id`로 조회합니다.** 주소 원문을 키로 쓰면 `&t=1189s`, `&list=…`, `youtu.be/…`,
+> shorts/live 주소가 전부 다른 영상으로 취급되어 **같은 영상에 AI를 2회씩 다시 호출**합니다.
+> 지금은 어떤 형태로 들어와도 `extract_video_id()`가 같은 ID로 수렴시킨 뒤 조회합니다.
+>
+> 구버전에 주소 원문으로 저장된 레코드를 위해, `video_id` 조회가 비면 `youtube_url` 정확일치도 한 번 더 확인합니다.
 
 ### `creators` — 유튜브 채널 (원작자)
 
@@ -110,9 +112,21 @@ update craft_terms set stitch_delta = 2 where standard_code = 'inc';
 update craft_terms set stitch_delta = 1 where standard_code = 'dec';
 update craft_terms set stitch_delta = 0 where standard_code in ('sl st','mr');
 
--- ④ 캐시 키 중복 방지 (같은 영상이 여러 건 저장되는 것을 막음)
-create unique index if not exists patterns_youtube_url_key on patterns (youtube_url);
+-- ④ 캐시 키 중복 방지 — 주소 원문이 아니라 video_id 기준
+--    먼저 기존 중복을 확인한다. 결과가 있으면 아래 dedup을 돌린 뒤 인덱스를 건다.
+select video_id, count(*) from patterns group by video_id having count(*) > 1;
+
+-- (중복이 있을 때만) 가장 오래된 1건만 남기고 정리
+delete from patterns p
+using patterns q
+where p.video_id = q.video_id
+  and p.created_at > q.created_at;
+
+create unique index if not exists patterns_video_id_key on patterns (video_id);
 ```
+
+> `created_at` 컬럼이 아직 없다면 dedup 쿼리는 `p.id > q.id`로 바꾸거나,
+> 중복 건을 직접 확인하고 지우세요.
 
 > `stitch_delta`를 채워두면 사전에 새 기법을 등록하는 것만으로 **코수 검증 범위가 자동으로 넓어집니다.**
 > 값이 없는 기법은 검증에서 제외(`skipped`)되므로, 틀린 경고가 뜨는 일은 없습니다.
