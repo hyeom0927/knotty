@@ -779,56 +779,138 @@ def normalize_needle_type(pattern_data: dict) -> dict:
     materials["needle"] = needle
     return pattern_data
 
+def _fetch_meta_from_page(video_id: str) -> dict:
+    """유튜브 워치 페이지를 직접 파싱한다. 가장 정보가 많지만 서버 IP가 차단되면 실패한다."""
+    meta = {}
+    req = urllib.request.Request(
+        f"https://www.youtube.com/watch?v={video_id}",
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'ko-KR,ko;q=0.9'
+        }
+    )
+    with urllib.request.urlopen(req, timeout=20) as response:
+        html = response.read().decode('utf-8', errors='ignore')
+
+    unescape = lambda s: re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), s)
+
+    desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
+    if desc_match:
+        meta["description"] = unescape(desc_match.group(1).replace(r'\n', '\n'))
+    title_match = re.search(r'"title":"([^"]*)"', html)
+    if title_match:
+        meta["title"] = unescape(title_match.group(1))
+    channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
+    if channel_match:
+        meta["channel_name"] = unescape(channel_match.group(1))
+
+    # 워치 페이지에는 추천 영상의 channelId도 섞여 있으므로 videoDetails 안의 값만 쓴다
+    owner = re.search(r'"videoDetails"\s*:\s*\{.*?"channelId"\s*:\s*"(UC[0-9A-Za-z_-]{22})"', html, re.DOTALL) \
+        or re.search(r'"externalChannelId"\s*:\s*"(UC[0-9A-Za-z_-]{22})"', html)
+    if owner:
+        meta["channel_id"] = owner.group(1)
+    handle = re.search(r'"canonicalBaseUrl":"(/@[^"]+)"', html)
+    if handle:
+        meta["channel_handle"] = handle.group(1).lstrip("/")
+
+    return meta
+
+
+def _fetch_meta_from_supadata(video_id: str) -> dict:
+    """Supadata 영상 메타데이터. 설명란과 channel.id까지 준다 (Render에서도 동작)."""
+    key = os.getenv("SUPADATA_API_KEY", "").strip()
+    if not key:
+        return {}
+
+    req = urllib.request.Request(
+        f"https://api.supadata.ai/v1/youtube/video?id={urllib.parse.quote(video_id)}",
+        headers={"x-api-key": key}
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    channel = data.get("channel") or {}
+    meta = {}
+    if data.get("title"):
+        meta["title"] = data["title"]
+    if data.get("description"):
+        meta["description"] = data["description"]
+    if channel.get("name"):
+        meta["channel_name"] = channel["name"]
+    if channel.get("id"):
+        meta["channel_id"] = channel["id"]
+    return meta
+
+
+def _fetch_meta_from_oembed(video_id: str) -> dict:
+    """유튜브 oEmbed. 인증이 필요 없고 차단되지 않는다. 설명란은 주지 않는다."""
+    target = urllib.parse.quote(f"https://www.youtube.com/watch?v={video_id}", safe="")
+    with urllib.request.urlopen(
+        f"https://www.youtube.com/oembed?url={target}&format=json", timeout=15
+    ) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    meta = {}
+    if data.get("title"):
+        meta["title"] = data["title"]
+    if data.get("author_name"):
+        meta["channel_name"] = data["author_name"]
+    author_url = data.get("author_url") or ""
+    handle = re.search(r"/@([^/?#]+)", author_url)
+    if handle:
+        meta["channel_handle"] = "@" + handle.group(1)
+    return meta
+
+
+def collect_video_metadata(video_id: str) -> dict:
+    """영상 메타데이터를 여러 경로로 모은다.
+
+    Render의 서버 IP는 유튜브에서 차단되어 워치 페이지 파싱이 조용히 실패한다.
+    (채널명이 비어 'ownerChannelName' 매치가 안 되고, creators에 "유튜브 채널"이 저장됐다)
+    그래서 빈 항목을 다른 경로로 메운다.
+
+      1) 워치 페이지  — 정보가 가장 많음. 차단되면 실패
+      2) Supadata     — 설명란 + channel.id 제공. 이미 자막에 쓰고 있는 키
+      3) oEmbed       — 인증 불필요·차단 없음. 제목·채널명·핸들만
+    """
+    meta = {}
+    for label, fetch in (("페이지", _fetch_meta_from_page),
+                         ("Supadata", _fetch_meta_from_supadata),
+                         ("oEmbed", _fetch_meta_from_oembed)):
+        # 이미 다 채워졌으면 더 부르지 않는다
+        if all(meta.get(k) for k in ("title", "description", "channel_name", "channel_id")):
+            break
+        try:
+            got = fetch(video_id)
+        except Exception as e:
+            print(f"⚠️ 메타데이터 {label} 실패: {str(e)[:120]}")
+            continue
+        added = [k for k, v in got.items() if v and not meta.get(k)]
+        for k in added:
+            meta[k] = got[k]
+        if added:
+            print(f"📄 메타데이터 {label}에서 보충: {', '.join(added)}")
+
+    missing = [k for k in ("title", "description", "channel_name", "channel_id") if not meta.get(k)]
+    if missing:
+        print(f"⚠️ 끝내 채우지 못한 메타데이터: {', '.join(missing)}")
+    return meta
+
+
 def get_youtube_data_sync(url: str, video_id: str):
-    """유튜브 메타데이터 수집 및 Supadata API 기반 자막 수집"""
-    title, description, channel_name, channel_url = "", "", "", ""
-    channel_id, channel_handle = "", ""
+    """영상 메타데이터 + 자막 수집"""
+    meta = collect_video_metadata(video_id)
+
+    title         = meta.get("title") or ""
+    description   = meta.get("description") or ""
+    channel_name  = meta.get("channel_name") or ""
+    channel_id    = meta.get("channel_id") or ""
+    channel_handle = meta.get("channel_handle") or ""
     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
-    # 1. 페이지 직접 파싱을 통한 메타데이터 추출
-    try:
-        req = urllib.request.Request(
-            f"https://www.youtube.com/watch?v={video_id}",
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'ko-KR,ko;q=0.9'
-            }
-        )
-        with urllib.request.urlopen(req) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-            desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
-            if desc_match:
-                raw_desc = desc_match.group(1).replace(r'\n', '\n')
-                description = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_desc)
-            title_match = re.search(r'"title":"([^"]*)"', html)
-            if title_match:
-                raw_title = title_match.group(1)
-                title = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw_title)
-            channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
-            if channel_match:
-                channel_name = channel_match.group(1)
-
-            # 채널 식별자 추출 — creators 테이블의 중복 방지 키로 사용됨.
-            # 핸들(@name)은 변경될 수 있으므로 불변인 channelId를 우선한다.
-            #
-            # 워치 페이지에는 추천 영상들의 channelId도 함께 들어 있으므로,
-            # 반드시 videoDetails 블록 안의 값을 써야 남의 채널로 저장되지 않는다.
-            owner_match = re.search(
-                r'"videoDetails"\s*:\s*\{.*?"channelId"\s*:\s*"(UC[0-9A-Za-z_-]{22})"',
-                html, re.DOTALL
-            ) or re.search(r'"externalChannelId"\s*:\s*"(UC[0-9A-Za-z_-]{22})"', html)
-
-            if owner_match:
-                channel_id = owner_match.group(1)
-                channel_url = f"https://www.youtube.com/channel/{channel_id}"
-
-            handle_match = re.search(r'"canonicalBaseUrl":"(/@[^"]+)"', html)
-            if handle_match:
-                channel_handle = handle_match.group(1).lstrip("/")
-                if not channel_url:
-                    channel_url = f"https://www.youtube.com{handle_match.group(1)}"
-    except Exception as e:
-        print(f"⚠️ 페이지 파싱 경고: {e}")
+    # 채널 주소는 항상 불변 ID로 만든다. 같은 채널이 핸들 주소와 ID 주소로
+    # 두 번 저장되는 것을 구조적으로 막기 위함이다.
+    channel_url = f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
 
     # 2. Supadata API 호출 (Render 유튜브 IP 차단 우회)
     transcript_text = ""
@@ -1016,7 +1098,10 @@ async def generate_pattern(req: PatternRequest):
         # 2. creators 테이블 저장/업데이트 (channel_url 기준 중복 방지)
         creator_id = None
         creator_record = None
-        if meta_info["channel_url"]:
+        # channel_id를 얻지 못하면 아예 만들지 않는다.
+        # 예전에는 핸들 주소로라도 저장했는데, 그 경우 채널명이 기본값("유튜브 채널")로
+        # 들어가 쓰레기 행이 쌓였다. 잘못된 채널 정보보다 없는 편이 낫다.
+        if meta_info.get("channel_id") and meta_info["channel_url"]:
             base_payload = {
                 "channel_name": meta_info["channel_name"] or "미상 채널",
                 "channel_url": meta_info["channel_url"]
@@ -1043,7 +1128,9 @@ async def generate_pattern(req: PatternRequest):
                 creator_id = creator_record["id"]
                 print(f"👤 [Creator] {meta_info['channel_name']} ({meta_info['channel_url']})")
         else:
-            print("⚠️ channel_url 파싱 실패 — creators 저장을 건너뜁니다.")
+            print(f"⚠️ 채널 ID를 얻지 못해 creators 저장을 건너뜁니다 "
+                  f"(channel_name={meta_info.get('channel_name')!r}). "
+                  f"나중에 백필로 채울 수 있습니다.")
 
         # 💡 자막 수집 실패 시 예외 처리
         if not transcript or not transcript.strip():
