@@ -161,7 +161,10 @@
             <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
               <span>📋</span> 상세 과정 (Pattern Steps)
             </h3>
-            <span class="text-xs text-slate-400">완료한 단은 체크하여 기록하세요</span>
+            <span id="validation-notice" class="hidden text-xs text-amber-700 font-medium bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg">
+              ⚠️ 코수 확인이 필요한 단이 <b id="validation-count">0</b>개 있어요
+            </span>
+            <span id="steps-hint" class="text-xs text-slate-400">완료한 단은 체크하여 기록하세요</span>
           </div>
 
           <div class="border border-slate-200 rounded-xl overflow-hidden">
@@ -327,8 +330,15 @@
           const tr = document.createElement("tr");
           tr.className = "hover:bg-slate-50 transition";
 
-          const rawTermVideo = term.video_url || term.video || rawYoutubeUrl;
+          // 기법 설명 영상이 없으면 링크를 만들지 않는다.
+          // (예전에는 원본 도안 영상으로 fallback되어 엉뚱한 곳으로 이동했다)
+          const rawTermVideo = term.video_url || term.video || "";
           const targetVideoUrl = formatUrl(rawTermVideo);
+          const videoCell = (targetVideoUrl && targetVideoUrl !== '#')
+            ? `<a href="${targetVideoUrl}" target="_blank" rel="noopener noreferrer" class="pdf-clickable-link text-red-600 hover:text-red-700 transition p-1 rounded hover:bg-red-50" title="기법 영상 보기">
+                 <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+               </a>`
+            : `<span class="text-slate-300">-</span>`;
 
           tr.innerHTML = `
             <td class="py-2.5 px-3 font-mono font-bold text-amber-700">
@@ -338,9 +348,7 @@
               ${term.kr_formal || '-'}
             </td>
             <td class="py-2.5 px-3 text-center">
-              <a href="${targetVideoUrl}" target="_blank" rel="noopener noreferrer" class="pdf-clickable-link text-red-600 hover:text-red-700 transition p-1 rounded hover:bg-red-50" title="영상 보기">
-                <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-              </a>
+              ${videoCell}
             </td>
           `;
           craftTermsList.appendChild(tr);
@@ -354,43 +362,83 @@
       stepsContainer.innerHTML = "";
 
       if (data.parts && data.parts.length > 0) {
-        data.parts.forEach((part) => {
+        data.parts.forEach((part, partIdx) => {
           const partTr = document.createElement("tr");
           partTr.className = "bg-slate-100/80 font-bold text-slate-800";
           partTr.innerHTML = `<td colspan="5" class="py-2.5 px-3">📌 ${part.part_name}</td>`;
           stepsContainer.appendChild(partTr);
 
-          (part.steps || []).forEach((step) => {
-            appendStepRow(stepsContainer, step);
+          (part.steps || []).forEach((step, stepIdx) => {
+            appendStepRow(stepsContainer, step, partIdx, stepIdx);
           });
         });
       } else {
-        (data.pattern_steps || []).forEach((step) => {
-          appendStepRow(stepsContainer, step);
+        (data.pattern_steps || []).forEach((step, stepIdx) => {
+          appendStepRow(stepsContainer, step, -1, stepIdx);
         });
+      }
+
+      // 코수 검증 요약 배너
+      const mismatchCount = (data.validation_summary && data.validation_summary.mismatch_count) || 0;
+      const notice = document.getElementById("validation-notice");
+      const hint = document.getElementById("steps-hint");
+      if (mismatchCount > 0) {
+        document.getElementById("validation-count").innerText = mismatchCount;
+        notice.classList.remove("hidden");
+        hint.classList.add("hidden");
+      } else {
+        notice.classList.add("hidden");
+        hint.classList.remove("hidden");
       }
 
       document.getElementById("card-date").innerText = new Date().toLocaleDateString();
       document.getElementById("result-container").classList.remove("hidden");
     }
 
-    function appendStepRow(container, step) {
+    // 서버의 코수 검증 결과 → 사용자에게 보여줄 안내 문구
+    function buildWarningTitle(v) {
+      if (!v || v.status !== "mismatch") return "";
+      if (v.reason === "continuity") {
+        return `늘림·줄임이 없는 단인데 앞 단(${v.previous}코)과 코수가 달라요. 확인이 필요합니다.`;
+      }
+      return `도안 약어대로 세면 ${v.parsed}코인데 ${v.expected}코로 적혀 있어요. 확인이 필요합니다.`;
+    }
+
+    function appendStepRow(container, step, partIdx, stepIdx) {
       const tr = document.createElement("tr");
-      tr.className = "hover:bg-slate-50 transition";
+
+      // 코수가 맞지 않는 단은 행 전체를 은은하게 강조한다.
+      // 값을 자동으로 고치지는 않는다 — 판단은 사용자 몫.
+      const warning = (step.validation && step.validation.status === "mismatch")
+        ? step.validation : null;
+      tr.className = warning
+        ? "bg-amber-50/70 hover:bg-amber-50 transition"
+        : "hover:bg-slate-50 transition";
 
       const rowName = step.step_name || (step.step_number ? `${step.step_number}단` : '-');
-      const stitchCount = (step.total_stitches !== undefined && step.total_stitches !== null && step.total_stitches !== 0) 
-        ? `${step.total_stitches}코` 
+      const stitchCount = (step.total_stitches !== undefined && step.total_stitches !== null && step.total_stitches !== 0)
+        ? `${step.total_stitches}코`
         : (step.estimated_stitches ? `${step.estimated_stitches}코` : '-');
+
+      // data-step-path: "파츠인덱스.단인덱스" — 저장 시 원본 JSON을 되찾기 위한 좌표.
+      // parts 구조가 아닌 구버전(pattern_steps)은 파츠 인덱스를 -1로 둔다.
+      const path = `${partIdx}.${stepIdx}`;
+
+      // ⚠️는 편집 대상이 아닌 체크박스 칸에 둔다.
+      // (코수 칸에 넣으면 저장할 때 사용자가 입력한 값과 섞인다)
+      const warnBadge = warning
+        ? `<span class="block mt-1 text-amber-600 text-xs leading-none cursor-help" title="${buildWarningTitle(warning)}">⚠️</span>`
+        : "";
 
       tr.innerHTML = `
         <td class="py-3 px-3 text-center">
           <input type="checkbox" onchange="toggleRowCheck(this)" class="rounded border-slate-300 text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer">
+          ${warnBadge}
         </td>
-        <td class="py-3 px-3 text-center font-bold text-slate-700 editable">${rowName}</td>
-        <td class="py-3 px-3 text-center text-slate-600 font-medium editable">${stitchCount}</td>
-        <td class="py-3 px-3 text-amber-700 font-mono font-medium leading-relaxed whitespace-pre-wrap editable">${step.formula || '-'}</td>
-        <td class="py-3 px-3 text-slate-600 leading-relaxed editable">${step.instruction || step.summary || '-'}</td>
+        <td class="py-3 px-3 text-center font-bold text-slate-700 editable" data-step-path="${path}" data-field="step_name">${rowName}</td>
+        <td class="py-3 px-3 text-center text-slate-600 font-medium editable" data-step-path="${path}" data-field="total_stitches">${stitchCount}</td>
+        <td class="py-3 px-3 text-amber-700 font-mono font-medium leading-relaxed whitespace-pre-wrap editable" data-step-path="${path}" data-field="formula">${step.formula || '-'}</td>
+        <td class="py-3 px-3 text-slate-600 leading-relaxed editable" data-step-path="${path}" data-field="instruction">${step.instruction || step.summary || '-'}</td>
       `;
       container.appendChild(tr);
     }
@@ -402,6 +450,63 @@
       } else {
         tr.classList.remove("bg-slate-100", "line-through", "opacity-50");
       }
+    }
+
+    // 화면에서 편집한 내용을 currentPatternData에 되쓴다.
+    // 이 함수가 없으면 표를 고쳐도 DB에는 반영되지 않는다.
+    function collectEdits() {
+      const data = currentPatternData;
+      if (!data) return;
+
+      // 1. 작품명
+      const titleText = document.getElementById("card-title").innerText.trim();
+      if (titleText) data.pattern_title = titleText;
+
+      // 2. 준비물
+      if (!data.materials) data.materials = {};
+      data.materials.yarn = document.getElementById("mat-yarn").innerText.trim();
+
+      // "코바늘 (3/0호(2.3mm))" → { type, size }  ※ size 안에 괄호가 또 있으므로 마지막 ')' 기준
+      const needleText = document.getElementById("mat-needle").innerText.trim();
+      const needleMatch = needleText.match(/^(.*?)\s*\((.*)\)$/);
+      if (needleMatch) {
+        data.materials.needle = { type: needleMatch[1].trim(), size: needleMatch[2].trim() };
+      } else if (needleText && needleText !== "-") {
+        data.materials.needle = { type: needleText, size: "" };
+      }
+
+      // "단수링, 돗바늘 / 총 36단" → accessories[] + total_rows
+      const accText = document.getElementById("mat-accessories").innerText.trim();
+      const accMatch = accText.match(/^(.*?)\s*\/\s*총\s*(.*?)단\s*$/);
+      const accPart = (accMatch ? accMatch[1] : accText).trim();
+      data.materials.accessories = (accPart === "없음" || accPart === "-" || accPart === "")
+        ? []
+        : accPart.split(",").map(s => s.trim()).filter(Boolean);
+      if (accMatch) {
+        const rows = parseInt(accMatch[2].replace(/[^0-9]/g, ""), 10);
+        if (!Number.isNaN(rows)) data.total_rows = rows;
+      }
+
+      // 3. 단별 상세 (data-step-path 좌표로 원본 step 객체를 찾아 갱신)
+      document.querySelectorAll("#steps-list [data-step-path]").forEach(el => {
+        const [partIdx, stepIdx] = el.dataset.stepPath.split(".").map(Number);
+        const step = partIdx >= 0
+          ? (data.parts && data.parts[partIdx] && data.parts[partIdx].steps || [])[stepIdx]
+          : (data.pattern_steps || [])[stepIdx];
+        if (!step) return;
+
+        const field = el.dataset.field;
+        const text = el.innerText.trim();
+
+        if (field === "total_stitches") {
+          const n = parseInt(text.replace(/[^0-9]/g, ""), 10);
+          step.total_stitches = Number.isNaN(n) ? 0 : n;
+          delete step.estimated_stitches;   // Pass 1 잔재 제거 (사용자 입력이 우선)
+        } else {
+          step[field] = (text === "-") ? "" : text;
+          if (field === "instruction") delete step.summary;
+        }
+      });
     }
 
     async function toggleEditMode() {
@@ -422,12 +527,9 @@
       } else {
         isEditMode = false;
         btn.innerText = "⏳ 저장 중...";
-        
-        const updatedYarn = document.getElementById("mat-yarn").innerText;
-        if (currentPatternData && currentPatternData.materials) {
-          currentPatternData.materials.yarn = updatedYarn;
-        }
-        
+
+        collectEdits();
+
         try {
           const res = await fetch(`${API_BASE}/api/pattern/${currentPatternId}`, {
             method: "PUT",
@@ -436,6 +538,17 @@
           });
           
           if (!res.ok) throw new Error("수정사항 저장 실패");
+
+          // 서버가 저장 시점에 코수를 다시 검증하므로, 그 결과로 화면을 갱신한다
+          const saved = await res.json();
+          if (saved && saved.data) {
+            currentPatternData = saved.data;
+            if (currentRootMeta) {
+              if (currentRootMeta.pattern_data) currentRootMeta.pattern_data = saved.data;
+              else currentRootMeta.data = saved.data;
+            }
+            renderPatternCard(currentRootMeta || { data: saved.data });
+          }
           alert("수정사항이 DB에 성공적으로 저장되었습니다!");
 
         } catch (err) {
