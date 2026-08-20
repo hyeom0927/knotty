@@ -277,9 +277,7 @@ def get_matching_craft_terms(pattern_data: dict, catalog: list = None) -> list:
                     "standard_code": term.get("standard_code"),
                     "kr_name": term.get("kr_name"),
                     "video_url": term.get("video_url"),
-                    # 도안 기호: 유니코드 글자(symbol_icon) 또는 기호 이미지(thumbnail_url)
-                    "symbol_icon": term.get("symbol_icon"),
-                    "thumbnail_url": term.get("thumbnail_url"),
+                    "thumbnail_url": term.get("thumbnail_url"),   # 도안 기호 이미지
                     "description": term.get("description")
                 })
 

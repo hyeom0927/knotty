@@ -37,13 +37,17 @@ create unique index if not exists creators_channel_id_key on creators (channel_i
 -- ------------------------------------------------------------
 -- 캐시는 주소 원문이 아니라 video_id로 조회합니다.
 -- 같은 영상이 &t=…, ?si=… 때문에 여러 건 저장되는 것을 막습니다.
+--
+-- ⚠️ 중복 정리를 인덱스 생성보다 반드시 먼저 해야 합니다.
+--    Supabase SQL Editor는 스크립트 전체를 하나의 트랜잭션으로 실행하므로,
+--    인덱스 생성이 실패하면 앞의 ALTER TABLE까지 전부 롤백됩니다.
 
--- 먼저 중복 확인 (결과가 있으면 아래 정리 후 인덱스 생성)
-select video_id, count(*) from patterns group by video_id having count(*) > 1;
-
--- 중복이 있을 때만 실행: 가장 먼저 만들어진 1건만 남깁니다
--- delete from patterns p using patterns q
--- where p.video_id = q.video_id and p.created_at > q.created_at;
+-- 같은 영상이 여러 건이면 가장 최근 것만 남깁니다.
+-- (나중에 만든 도안이 대체로 더 정제되어 있습니다)
+delete from patterns p
+using patterns q
+where p.video_id = q.video_id
+  and p.created_at < q.created_at;
 
 create unique index if not exists patterns_video_id_key on patterns (video_id);
 

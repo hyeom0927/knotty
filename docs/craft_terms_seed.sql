@@ -24,12 +24,11 @@
 --
 -- stitch_delta  : 이 기법 1개가 편물에 남기는 코의 수 (코수 검증용)
 --
--- symbol_icon   : 도안 기호. 유니코드로 표현되는 8건만 채웁니다.
---                 tr·dtr는 정확한 기호가 "T에 빗금 2개/3개"인데 결합문자를 겹쳐도
---                 dc(빗금 1개)와 구분되지 않아 비웠습니다.
---                 나머지는 thumbnail_url에 기호 이미지를 넣어 표시하세요.
+-- thumbnail_url : 도안 기호 이미지 경로. symbols/ 폴더의 SVG를 가리킵니다.
+--                 ⑤에서 standard_code로부터 자동 생성되므로 직접 적지 않습니다.
+--                 (유니코드 글자로는 "T에 빗금 2개/3개"를 표현할 수 없어 이미지로 갑니다)
 --
--- video_url / thumbnail_url : 지금은 비워둡니다. ⑥에서 나중에 채웁니다.
+-- video_url     : 기법 설명 영상. 지금은 비워둡니다. ⑥에서 나중에 채웁니다.
 
 
 -- ------------------------------------------------------------
@@ -50,7 +49,6 @@ create table public.craft_terms (
   craft_type    craft_type_enum          not null,
   standard_code character varying(50)    not null,
   kr_name       character varying(100)   not null,
-  symbol_icon   character varying(20)    null,
   description   text                     null,
   video_url     text                     null,
   thumbnail_url text                     null,
@@ -67,62 +65,62 @@ create table public.craft_terms (
 -- ② 코바늘 — 도안 약어 (22건)
 -- ------------------------------------------------------------
 insert into craft_terms
-  (craft_type, entry_type, standard_code, kr_name, symbol_icon, stitch_delta, description)
+  (craft_type, entry_type, standard_code, kr_name, stitch_delta, description)
 values
   -- 기본 기법 ---------------------------------------------------
-  ('crochet','stitch','ch',    '사슬뜨기',   '○', 1,
+  ('crochet','stitch','ch',    '사슬뜨기',    1,
    '실을 걸어 빼내며 사슬을 만드는 가장 기본 기법. 기초 사슬과 기둥사슬에 쓰입니다.'),
-  ('crochet','stitch','sl_st', '빼뜨기',     '●', 0,
+  ('crochet','stitch','sl_st', '빼뜨기',      0,
    '코에 바늘을 넣어 실을 그대로 빼내는 기법. 원형 연결·이동에 쓰이며 보통 코수에 넣지 않습니다. 도안에는 sl st로 표기합니다.'),
-  ('crochet','stitch','sc',    '짧은뜨기',   '×', 1,
+  ('crochet','stitch','sc',    '짧은뜨기',    1,
    '가장 기본이 되는 촘촘한 기법. 인형·소품에 널리 쓰입니다. 영국식 도안에서는 dc로 표기하므로 미국식 dc(한길긴뜨기)와 혼동하지 마세요.'),
-  ('crochet','stitch','hdc',   '긴뜨기',     'T', 1,
+  ('crochet','stitch','hdc',   '긴뜨기',      1,
    '실을 한 번 걸고 세 고리를 한 번에 빼내는 기법. 짧은뜨기와 한길긴뜨기의 중간 높이입니다. 영국식은 htr입니다.'),
-  ('crochet','stitch','dc',    '한길긴뜨기', 'Ŧ', 1,
+  ('crochet','stitch','dc',    '한길긴뜨기',  1,
    '실을 한 번 걸고 두 번에 나눠 빼내는 기법. 무늬뜨기에 가장 많이 쓰입니다. 영국식 도안에서는 tr로 표기하므로 미국식 tr(두길긴뜨기)와 혼동하지 마세요.'),
-  ('crochet','stitch','tr',    '두길긴뜨기', null, 1,
+  ('crochet','stitch','tr',    '두길긴뜨기',  1,
    '실을 두 번 걸어 뜨는 기법. 한길긴뜨기보다 기둥이 높습니다. 도안 기호는 T에 빗금 2개입니다. 영국식은 dtr입니다.'),
-  ('crochet','stitch','dtr',   '세길긴뜨기', null, 1,
+  ('crochet','stitch','dtr',   '세길긴뜨기',  1,
    '실을 세 번 걸어 뜨는 기법. 레이스나 성긴 무늬에 쓰입니다. 도안 기호는 T에 빗금 3개입니다. 영국식은 trtr입니다.'),
-  ('crochet','stitch','mr',    '매직링',     '◎', 0,
+  ('crochet','stitch','mr',    '매직링',      0,
    '실로 조절 가능한 고리를 만들어 원형 뜨기를 시작하는 방법. 중앙 구멍을 조여 막을 수 있습니다. 도안에는 MR로도 표기합니다.'),
 
   -- 늘림 · 줄임 -------------------------------------------------
-  ('crochet','stitch','inc',    '짧은뜨기 2코 늘려뜨기',   'V', 2,
+  ('crochet','stitch','inc',    '짧은뜨기 2코 늘려뜨기',    2,
    '한 코에 짧은뜨기를 2개 떠서 1코를 늘립니다. 도안에는 2 sc in next st로도 표기합니다.'),
-  ('crochet','stitch','dec',    '짧은뜨기 2코 모아뜨기',   'Λ', 1,
+  ('crochet','stitch','dec',    '짧은뜨기 2코 모아뜨기',    1,
    '짧은뜨기 2개를 한 번에 마무리해 1코로 줄입니다. 도안에는 sc2tog로도 표기합니다.'),
-  ('crochet','stitch','sc3tog', '짧은뜨기 3코 모아뜨기',   null, 1,
+  ('crochet','stitch','sc3tog', '짧은뜨기 3코 모아뜨기',    1,
    '짧은뜨기 3개를 한 번에 마무리해 2코를 줄입니다.'),
-  ('crochet','stitch','dc_inc', '한길긴뜨기 2코 늘려뜨기', null, 2,
+  ('crochet','stitch','dc_inc', '한길긴뜨기 2코 늘려뜨기',  2,
    '한 코에 한길긴뜨기를 2개 떠서 1코를 늘립니다. 도안에는 dc inc 또는 2 dc in next st로 표기합니다.'),
-  ('crochet','stitch','dc2tog', '한길긴뜨기 2코 모아뜨기', null, 1,
+  ('crochet','stitch','dc2tog', '한길긴뜨기 2코 모아뜨기',  1,
    '한길긴뜨기 2개를 한 번에 마무리해 1코로 줄입니다.'),
-  ('crochet','stitch','dc3tog', '한길긴뜨기 3코 모아뜨기', null, 1,
+  ('crochet','stitch','dc3tog', '한길긴뜨기 3코 모아뜨기',  1,
    '한길긴뜨기 3개를 한 번에 마무리해 2코를 줄입니다.'),
 
   -- 입체 무늬 ---------------------------------------------------
-  ('crochet','stitch','puff',    '긴뜨기 5코 퍼프뜨기',     null, 1,
+  ('crochet','stitch','puff',    '긴뜨기 5코 퍼프뜨기',      1,
    '한 코에 긴뜨기를 5번 걸어 한 번에 빼내는 도톰한 기법. 퍼프 스티치. 도안에는 puff st 또는 hdc5tog로 표기합니다.'),
-  ('crochet','stitch','bobble',  '한길긴뜨기 5코 구슬뜨기', null, 1,
+  ('crochet','stitch','bobble',  '한길긴뜨기 5코 구슬뜨기',  1,
    '한 코에 한길긴뜨기 5개를 모아떠 구슬처럼 볼록하게 만듭니다. 버블 스티치. 도안에는 bobble 또는 dc5tog로 표기합니다.'),
-  ('crochet','stitch','popcorn', '한길긴뜨기 5코 팝콘뜨기', null, 1,
+  ('crochet','stitch','popcorn', '한길긴뜨기 5코 팝콘뜨기',  1,
    '한 코에 한길긴뜨기 5개를 뜬 뒤 첫 코로 빼내어 팝콘처럼 튀어나오게 합니다. 도안에는 popcorn을 줄여 pc로 표기합니다.'),
 
   -- 걸어뜨기 ----------------------------------------------------
-  ('crochet','stitch','fpdc', '앞걸어 한길긴뜨기', null, 1,
+  ('crochet','stitch','fpdc', '앞걸어 한길긴뜨기',  1,
    '앞단 기둥을 앞쪽에서 감아 뜨는 한길긴뜨기. 골지 무늬에 씁니다. 도안에는 FPdc로 표기합니다.'),
-  ('crochet','stitch','bpdc', '뒤걸어 한길긴뜨기', null, 1,
+  ('crochet','stitch','bpdc', '뒤걸어 한길긴뜨기',  1,
    '앞단 기둥을 뒤쪽에서 감아 뜨는 한길긴뜨기. 골지 무늬에 씁니다. 도안에는 BPdc로 표기합니다.'),
 
   -- 뜨는 위치 지정 (코수를 늘리지 않음) --------------------------
-  ('crochet','stitch','flo', '앞이랑뜨기', null, 0,
+  ('crochet','stitch','flo', '앞이랑뜨기',  0,
    '코의 앞쪽 반 코에만 바늘을 넣어 뜹니다. 코수는 변하지 않습니다. 도안에는 FLO로 표기합니다.'),
-  ('crochet','stitch','blo', '뒤이랑뜨기', null, 0,
+  ('crochet','stitch','blo', '뒤이랑뜨기',  0,
    '코의 뒤쪽 반 코에만 바늘을 넣어 뜹니다. 코수는 변하지 않습니다. 도안에는 BLO로 표기합니다.'),
 
   -- 마무리 ------------------------------------------------------
-  ('crochet','stitch','crab', '새우뜨기', null, 1,
+  ('crochet','stitch','crab', '새우뜨기',  1,
    '진행 방향을 거꾸로 뜨는 짧은뜨기. 테두리를 단단히 마무리할 때 씁니다. 역짧은뜨기. 도안에는 rev sc 또는 crab st로 표기합니다.');
 
 
@@ -134,15 +132,15 @@ values
 -- (주입되면 AI가 formula에 color_change 같은 값을 적어 도안 약어가 오염됩니다)
 
 insert into craft_terms
-  (craft_type, entry_type, standard_code, kr_name, symbol_icon, stitch_delta, description)
+  (craft_type, entry_type, standard_code, kr_name, stitch_delta, description)
 values
-  ('crochet','technique','color_change', '배색',         null, null,
+  ('crochet','technique','color_change', '배색',          null,
    '실 색을 바꾸는 방법. 직전 코의 마지막 실을 빼낼 때 새 실로 바꾸면 경계가 깔끔합니다.'),
-  ('crochet','technique','oval_base',    '타원형 만들기', null, null,
+  ('crochet','technique','oval_base',    '타원형 만들기',  null,
    '기초 사슬의 양옆을 둘러 뜨며 타원형 밑판을 만드는 방법입니다.'),
-  ('crochet','technique','ring_base',    '원형코 만들기', null, null,
+  ('crochet','technique','ring_base',    '원형코 만들기',  null,
    '사슬을 이어 고리를 만들고 그 안에 떠 넣는 원형 시작 방법. 매직링(mr)과는 다릅니다.'),
-  ('crochet','technique','sew_finish',   '돗바늘 마무리', null, null,
+  ('crochet','technique','sew_finish',   '돗바늘 마무리',  null,
    '돗바늘로 실 끝을 편물 안에 감추거나 편물끼리 잇는 마무리 과정입니다.');
 
 
@@ -150,19 +148,19 @@ values
 -- ④ 대바늘 — 도안 약어 (6건)
 -- ------------------------------------------------------------
 insert into craft_terms
-  (craft_type, entry_type, standard_code, kr_name, symbol_icon, stitch_delta, description)
+  (craft_type, entry_type, standard_code, kr_name, stitch_delta, description)
 values
-  ('knitting','stitch','k',     '겉뜨기',                 null, 1,
+  ('knitting','stitch','k',     '겉뜨기',                  1,
    '가장 기본이 되는 대바늘 기법. 겉면이 브이(V) 모양으로 보입니다.'),
-  ('knitting','stitch','p',     '안뜨기',                 null, 1,
+  ('knitting','stitch','p',     '안뜨기',                  1,
    '겉뜨기의 반대 방향으로 뜨는 기법. 겉면이 가로줄 모양으로 보입니다.'),
-  ('knitting','stitch','yo',    '바늘비우기',             null, 1,
+  ('knitting','stitch','yo',    '바늘비우기',              1,
    '실을 바늘에 걸어 구멍과 함께 1코를 늘립니다. 레이스 무늬의 기본입니다.'),
-  ('knitting','stitch','k2tog', '겉뜨기 2코 모아뜨기',    null, 1,
+  ('knitting','stitch','k2tog', '겉뜨기 2코 모아뜨기',     1,
    '2코를 함께 겉뜨기해 1코로 줄입니다. 오른쪽으로 기웁니다.'),
-  ('knitting','stitch','ssk',   '왼코 겹쳐 2코 모아뜨기', null, 1,
+  ('knitting','stitch','ssk',   '왼코 겹쳐 2코 모아뜨기',  1,
    '2코를 겉뜨기 방향으로 옮긴 뒤 함께 떠 1코로 줄입니다. 왼쪽으로 기웁니다.'),
-  ('knitting','stitch','co',    '코잡기',                 null, 1,
+  ('knitting','stitch','co',    '코잡기',                  1,
    '대바늘 뜨기를 시작할 때 첫 단의 코를 만드는 과정입니다. 도안에는 CO로 표기합니다.');
 
 
@@ -190,28 +188,20 @@ select standard_code, kr_name from craft_terms
 where entry_type = 'stitch' and stitch_delta is null;
 -- 기대: 0건
 
--- 도안 기호가 채워진 항목
-select standard_code, kr_name, symbol_icon from craft_terms
-where symbol_icon is not null order by standard_code;
--- 기대: 8건 (ch ○ / sl_st ● / sc × / hdc T / dc Ŧ / mr ◎ / inc V / dec Λ)
+-- 기호 이미지가 연결된 항목
+select standard_code, kr_name, thumbnail_url from craft_terms
+where thumbnail_url is not null order by craft_type, standard_code;
+-- 기대: 28건 (stitch 전부. technique 4건은 기호가 없는 것이 정상)
 
 
 -- ------------------------------------------------------------
--- ⑥ 영상 · 기호 이미지 채우기 (나중에 별도 실행)
+-- ⑥ 기법 영상 링크 채우기 (나중에 별도 실행)
 -- ------------------------------------------------------------
 -- craft_type을 함께 지정해야 대바늘·코바늘의 같은 약어가 섞이지 않습니다.
 --
 -- update craft_terms set video_url = 'https://www.youtube.com/watch?v=...'
 --   where craft_type = 'crochet' and standard_code = 'ch';
---
--- update craft_terms set thumbnail_url = 'https://.../symbols/tr.svg'
---   where craft_type = 'crochet' and standard_code = 'tr';
 
 -- 아직 영상이 없는 항목
 -- select craft_type, standard_code, kr_name from craft_terms
 -- where video_url is null order by craft_type, entry_type, standard_code;
-
--- 기호 이미지가 필요한 항목 (유니코드로 표현되지 않는 것들)
--- select craft_type, standard_code, kr_name from craft_terms
--- where symbol_icon is null and entry_type = 'stitch'
--- order by craft_type, standard_code;
