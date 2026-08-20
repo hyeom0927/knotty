@@ -51,19 +51,69 @@ Supabase(PostgreSQL) 테이블 구조, 도안 JSON 스키마, 그리고 **기법
 
 ### `craft_terms` — 기법 사전 (마스터 테이블)
 
-| 컬럼 | 타입 | 설명 |
-|---|---|---|
-| `standard_code` | text | 표준 영문 약어 (`ch`, `sc`, `inc`, `dec`, `hdc`, `dc`, `mr`, `sl st` …) |
-| `kr_formal` | text | 한국어 정식 명칭 (사슬뜨기, 짧은뜨기 …) |
-| `video_url` | text | 기법 설명 영상 |
+**32건** 등록되어 있습니다 — 코바늘 약어 22 / 코바늘 용어 4 / 대바늘 약어 6.
+시드 스크립트는 [`craft_terms_seed.sql`](craft_terms_seed.sql)입니다.
+
+| 컬럼 | 설명 |
+|---|---|
+| `craft_type` | `crochet` / `knitting` |
+| `entry_type` | `stitch` = 도안 약어 · `technique` = 용어사전 전용 (아래 참고) |
+| `standard_code` | **유일한 기법 식별자.** `formula`에 등장하고 프롬프트에 주입되며 코수 검증이 매칭하는 키 |
+| `kr_name` | 한국어 정식 명칭 (짧은뜨기, 한길긴뜨기 …) |
+| `stitch_delta` | 이 기법 1개가 편물에 남기는 코 수. 코수 검증에 사용 (아래 4번) |
+| `description` | 사전 설명. **실제 도안에서 쓰이는 다른 표기법도 여기에 서술** |
+| `symbol_icon` | 도안 기호. 유니코드로 표현되는 8건만 채움 (아래 참고) |
+| `video_url`, `thumbnail_url` | 표시용 (현재 비어 있음) |
+
+#### 도안 기호(`symbol_icon`)를 8건만 채운 이유
+
+한국·일본이 쓰는 JIS 차트 기호는 대부분 유니코드에 대응 글자가 없습니다.
+
+| 채운 것 | 기호 |
+|---|---|
+| `ch` 사슬 · `sl_st` 빼뜨기 · `sc` 짧은 · `hdc` 긴 · `dc` 한길긴 · `mr` 매직링 | `○ ● × T Ŧ ◎` |
+| `inc` 늘림 · `dec` 줄임 (아미구루미 차트 관례) | `V Λ` |
+
+`tr`(두길긴뜨기) · `dtr`(세길긴뜨기)는 정확한 기호가 **"T에 빗금 2개 / 3개"** 인데,
+유니코드 결합문자를 겹쳐도 같은 자리에 덧그려져 `dc`(빗금 1개)와 **구분되지 않습니다.**
+틀린 기호를 넣느니 비워두었습니다.
+
+퍼프·구슬·팝콘·걸어뜨기·이랑뜨기·모아뜨기 계열은 대응 글자 자체가 없습니다.
+→ 나머지 20건은 **기호 이미지(SVG/PNG)를 `thumbnail_url`에** 넣어 UI에서 우선 표시하는 방식을 권합니다.
+
+#### 코드 작명 규칙
+
+`standard_code`는 **미국식 약어를 기본**으로 하되, 약어가 모호하거나 여러 형태로 통용되는 기법
+(`puff`, `bobble`, `popcorn`, `crab`)은 **알아보기 쉬운 이름**을 씁니다.
+`inc` / `dec`는 미국식 표준 약어이면서 기존 도안들이 이미 쓰고 있어 그대로 유지합니다.
+
+실제 도안에 등장하는 다른 표기(`sc2tog`, `rev sc`, `puff st`, `2 sc in next st` …)와
+영국식 표기(`sc`→`dc`, `dc`→`tr` …)는 **`description`에 문장으로** 적습니다.
+
+> **`kr_short` · `us_abbr` · `uk_abbr`는 제거했습니다.**
+> 세 컬럼 모두 코드가 한 번도 참조하지 않았고(0회), 값의 절반이 `standard_code`와 같아 혼란만 키웠습니다.
+> 특히 `us_abbr`은 용어사전 4건에서 `null`이라 식별자가 될 수 없고,
+> `dec`의 `us_abbr`인 `sc2tog`를 키로 삼으면 기존 도안의 `formula`(`dec` 사용)와 매칭이 끊깁니다.
+
+> ⚠️ **`sl_st` 표기 주의**: `standard_code`는 언더스코어(`sl_st`)인데 도안 표기는 `sl st`(공백)입니다.
+> 그래서 코드에서 `_normalize_code()`로 `[\s_]+`를 공백 하나로 통일해 같은 코드로 취급합니다.
+> 정규화하지 않으면 **빼뜨기가 들어간 단이 전부 검증에서 빠집니다.**
+
+#### `entry_type`을 나눈 이유
+
+`craft_terms`는 **① AI에게 주는 허용 약어 목록**이자 **② 사람이 볼 용어사전**입니다.
+배색·타원형 만들기·원형코 만들기·돗바늘 마무리처럼 **약어도 코수도 없는 "과정"**을 그냥 넣으면,
+Pass 2 프롬프트에 섞여 들어가 AI가 `formula`에 `color_change` 같은 값을 적습니다.
+`entry_type='technique'` 항목은 `build_terms_catalog_text()`가 프롬프트에서 제외합니다.
 
 **추가 권장**
 
 | 컬럼 | 용도 |
 |---|---|
-| `needle_type` | `코바늘` / `대바늘` / `공통` — 바늘 종류에 맞는 기법만 노출 |
-| `stitch_delta` | 이 기법이 만들어내는 코 수. 코수 검증에 사용 (아래 4번) |
 | `aliases` | text[] — 자막에 등장하는 한국어 표현들 (짧은뜨기, 짧은 뜨기, 단코 …) |
+
+> `craft_type`이 이미 있으므로 별도 `needle_type` 컬럼은 필요 없습니다. 코드가 `craft_type`을 읽습니다.
+> 다만 같은 약어를 코바늘·대바늘 양쪽에 등록하면 코수 검증기가 하나로 덮어씁니다 (아래 5번 참고).
 
 ### `craft_terms_pending` — 신규 기법 등록 큐 (신설)
 
@@ -102,15 +152,14 @@ create table if not exists craft_terms_pending (
   created_at        timestamptz not null default now()
 );
 
--- ② 기법 사전 확장 (없으면 기본 코수 테이블만 사용)
-alter table craft_terms add column if not exists needle_type  text;  -- 코바늘 | 대바늘 | 공통
+-- ② 기법 사전 확장 (craft_type은 이미 있으므로 stitch_delta만 추가)
 alter table craft_terms add column if not exists stitch_delta int;   -- 이 기법이 만드는 코 수
 
--- ③ 기본 기법의 코수 등록 (예시 — 사전에 이미 있는 코드에만 적용됨)
-update craft_terms set stitch_delta = 1 where standard_code in ('sc','hdc','dc','tr','dtr');
+-- ③ 현재 등록된 15개 기법의 코수 (코드는 실제 standard_code 값 기준)
+update craft_terms set stitch_delta = 1 where standard_code in ('ch','sc','hdc','dc','tr');
 update craft_terms set stitch_delta = 2 where standard_code = 'inc';
-update craft_terms set stitch_delta = 1 where standard_code = 'dec';
-update craft_terms set stitch_delta = 0 where standard_code in ('sl st','mr');
+update craft_terms set stitch_delta = 1 where standard_code in ('dec','k','p','yo','k2tog','ssk','co');
+update craft_terms set stitch_delta = 0 where standard_code in ('sl_st','mr');
 
 -- ④ 캐시 키 중복 방지 — 주소 원문이 아니라 video_id 기준
 --    먼저 기존 중복을 확인한다. 결과가 있으면 아래 dedup을 돌린 뒤 인덱스를 건다.
@@ -189,7 +238,7 @@ Pass 2가 최종 반환하는 형태입니다.
 
 처리 순서:
 
-1. 요청 시작 시 `craft_terms`에서 `standard_code` + `kr_formal` 전체를 조회 (프로세스 캐싱)
+1. 요청 시작 시 `craft_terms`에서 `standard_code` + `kr_name` 전체를 조회 (프로세스 캐싱)
 2. **Pass 2 프롬프트에 허용 약어 목록을 주입** — "이 목록에 있는 약어만 `formula`에 사용할 것"
 3. 목록에 없는 기법을 만나면 → `formula`에 임의 약어를 만들지 말고 `unknown_terms: ["원문"]`에 담도록 지시
 4. 응답의 `unknown_terms` → `craft_terms_pending`에 누적
