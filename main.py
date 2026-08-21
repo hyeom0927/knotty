@@ -5,7 +5,8 @@ import time
 import asyncio
 import urllib.request
 import urllib.parse
-from fastapi import FastAPI, HTTPException
+from collections import deque
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
@@ -85,12 +86,137 @@ app = FastAPI(
     description="유튜브 뜨개질 도안 자동 추출 및 관리 API"
 )
 
+# 허용 출처(Origin)는 환경변수로 바꿀 수 있다. 커스텀 도메인을 붙이거나
+# 로컬 포트를 바꿀 때 코드를 고치지 않아도 되게 하기 위함이다.
+#   ALLOWED_ORIGINS="https://knotty.kr,http://localhost:5500"
+_DEFAULT_ORIGINS = [
+    "https://hyeom0927.github.io",   # GitHub Pages (운영)
+    "http://localhost:5500",         # 로컬 개발 (python -m http.server 5500)
+    "http://127.0.0.1:5500",
+]
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", ",".join(_DEFAULT_ORIGINS)).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
+
+# ------------------------------------------
+# 호출량 제한 — Gemini · Supadata 비용 방어
+# ------------------------------------------
+# `/api/generate`는 한 번 부를 때마다 Gemini 2회 + Supadata 1회가 나간다.
+# 주소를 아는 사람이면 누구나 부를 수 있으므로, 방어가 없으면 남의 스크립트가
+# 우리 요금을 태울 수 있다. 세 겹으로 막는다.
+#
+#   ① CORS 허용 출처 — 다른 사이트의 브라우저 코드가 우리 API를 쓰지 못하게 한다.
+#   ② IP당 한도    — 한 사람이 연달아 퍼가는 것을 막는다.
+#   ③ 전역 일일 한도 — **비용의 상한선.** 무슨 일이 있어도 하루에 이 횟수 이상은
+#                      AI를 부르지 않는다. ①②가 모두 뚫려도 손해가 여기서 멈춘다.
+#
+# 0을 넣으면 그 한도는 꺼진다. 캐시된 도안은 AI를 부르지 않으므로 세지 않는다.
+RATE_LIMIT_PER_IP_HOUR  = int(os.getenv("RATE_LIMIT_PER_IP_HOUR", "5"))
+RATE_LIMIT_PER_IP_DAY   = int(os.getenv("RATE_LIMIT_PER_IP_DAY", "20"))
+RATE_LIMIT_GLOBAL_DAY   = int(os.getenv("RATE_LIMIT_GLOBAL_DAY", "100"))
+
+_HOUR = 3600
+_DAY = 86400
+
+# {버킷 이름: 호출 시각 deque}. 프로세스 메모리에만 있으므로 Render가 재시작하면
+# 초기화된다. 인스턴스 1대짜리 프로토타입에서는 이 정도로 충분하다.
+_rate_events: dict = {}
+
+
+class RateLimitExceeded(Exception):
+    """호출량 한도 초과. 사용자에게 보여줄 문구와 재시도 대기 시간을 함께 담는다."""
+
+    def __init__(self, message: str, retry_after: int):
+        super().__init__(message)
+        self.message = message
+        self.retry_after = retry_after
+
+
+def client_ip(request: Request) -> str:
+    """호출자의 IP를 찾는다.
+
+    Render는 프록시 뒤에 있어서 request.client.host가 항상 프록시 주소다.
+    실제 방문자는 X-Forwarded-For의 **맨 앞** 값이다. (뒤쪽은 중간 프록시들)
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _window_count(bucket: str, window_sec: int, now: float) -> int:
+    """버킷에서 창(window) 밖으로 나간 기록을 버리고 남은 개수를 센다."""
+    events = _rate_events.get(bucket)
+    if events is None:
+        events = _rate_events[bucket] = deque()
+    while events and now - events[0] > window_sec:
+        events.popleft()
+    return len(events)
+
+
+def check_rate_limit(ip: str) -> None:
+    """한도를 넘었으면 RateLimitExceeded를 던지고, 통과하면 호출 1건을 기록한다.
+
+    확인과 기록을 한 함수에서 하는 이유는, 실제로 AI를 부르기 직전에 딱 한 번만
+    불러야 카운트가 새거나 겹치지 않기 때문이다.
+    """
+    now = time.time()
+
+    checks = [
+        (f"ip:{ip}:hour", RATE_LIMIT_PER_IP_HOUR, _HOUR,
+         "잠시만요! 짧은 시간에 너무 많이 만드셨어요. 한 시간쯤 뒤에 다시 시도해 주세요."),
+        (f"ip:{ip}:day", RATE_LIMIT_PER_IP_DAY, _DAY,
+         "오늘 만들 수 있는 도안 수를 다 쓰셨어요. 내일 다시 시도해 주세요."),
+        ("global:day", RATE_LIMIT_GLOBAL_DAY, _DAY,
+         "오늘 Knotty 전체의 AI 사용량을 모두 썼어요. 내일 다시 시도해 주세요."),
+    ]
+
+    for bucket, limit, window, message in checks:
+        if limit <= 0:
+            continue
+        used = _window_count(bucket, window, now)
+        if used >= limit:
+            oldest = _rate_events[bucket][0]
+            retry_after = max(1, int(window - (now - oldest)))
+            print(f"🚦 호출량 제한: {bucket} — {used}/{limit} (재시도까지 {retry_after}초)")
+            raise RateLimitExceeded(message, retry_after)
+
+    # 모든 한도를 통과했을 때만 기록한다.
+    for bucket, limit, _window, _message in checks:
+        if limit > 0:
+            _rate_events[bucket].append(now)
+
+
+print(
+    f"🚦 호출량 제한 — IP당 {RATE_LIMIT_PER_IP_HOUR or '무제한'}회/시간, "
+    f"{RATE_LIMIT_PER_IP_DAY or '무제한'}회/일 / 전체 {RATE_LIMIT_GLOBAL_DAY or '무제한'}회/일"
+)
+print(f"🌐 허용 출처 — {', '.join(ALLOWED_ORIGINS) or '(없음)'}")
+
+
+def reject_foreign_origin(request: Request) -> None:
+    """다른 사이트에서 온 브라우저 요청을 막는다.
+
+    CORS는 **응답을 읽는 것**만 막을 뿐, 요청 자체는 이미 서버에 도착한다.
+    즉 CORS만으로는 AI 호출이 일어나는 것을 막지 못하므로 여기서 한 번 더 본다.
+
+    Origin 헤더가 아예 없는 요청(curl, 서버 간 호출)은 통과시킨다.
+    막아도 헤더 한 줄로 우회되는데 로컬 개발과 헬스체크만 불편해지기 때문이다.
+    그쪽은 위의 IP·전역 한도가 담당한다.
+    """
+    origin = request.headers.get("origin")
+    if origin and origin not in ALLOWED_ORIGINS:
+        print(f"🚫 허용되지 않은 출처의 호출 차단: {origin}")
+        raise HTTPException(status_code=403, detail="허용되지 않은 요청입니다.")
+
 
 # ==========================================
 # 2. Pydantic 요청 스키마 정의
@@ -830,6 +956,86 @@ def validate_stitch_counts(pattern_data: dict, catalog: list = None) -> dict:
     return pattern_data
 
 
+def _ts_key(text) -> str:
+    """단 이름을 대조용으로 정규화한다. ('11 ~ 13단' → '11~13단')"""
+    return re.sub(r"\s+", "", str(text or "")).lower()
+
+
+def graft_pass1_timestamps(pattern_data: dict, pass1_raw: str) -> dict:
+    """Pass 2가 흘린 타임스탬프를 Pass 1 결과에서 되살린다.
+
+    시각의 유일한 출처는 자막이고, 자막을 보는 것은 Pass 1뿐이다.
+    Pass 2는 그 값을 옮겨 적기만 하는데, 한도 여유를 위해 더 가벼운 모델을 쓰다 보니
+    필드를 통째로 빠뜨리는 일이 있다. 그러면 기능이 **조용히** 죽는다.
+    (실제로 이 기능은 그렇게 죽어 있었다 — 저장된 6건 119단 전부 start가 0이었다)
+
+    그래서 Pass 1이 준 값을 서버가 직접 들고 있다가, Pass 2가 비워 놓은 자리에만 채운다.
+    Pass 2가 이미 값을 넣었다면 건드리지 않는다.
+    """
+    if not isinstance(pattern_data, dict):
+        return pattern_data
+
+    try:
+        pass1 = parse_ai_json(pass1_raw)
+    except Exception as e:
+        print(f"⏱️ Pass 1 재파싱 실패로 타임스탬프 보충을 건너뜁니다: {e}")
+        return pattern_data
+
+    # (파츠명, 단이름) → 초. 파츠명이 달라졌을 때를 대비해 단이름만으로도 찾을 수 있게 둔다.
+    by_pair, by_step = {}, {}
+    for part in (pass1.get("parts") or []):
+        if not isinstance(part, dict):
+            continue
+        pname = _ts_key(part.get("part_name"))
+        for step in (part.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            raw = step.get("start_sec")
+            if isinstance(raw, str) and raw.strip().isdigit():
+                raw = int(raw)
+            if not isinstance(raw, (int, float)) or raw <= 0:
+                continue
+            sname = _ts_key(step.get("step_name") or step.get("row_range"))
+            if not sname:
+                continue
+            by_pair[(pname, sname)] = int(raw)
+            # 단 이름이 파츠를 넘어 중복되면(1단이 여러 파츠에 있음) 단독 조회는 포기한다
+            by_step[sname] = None if sname in by_step else int(raw)
+
+    if not by_pair:
+        print("⏱️ Pass 1이 넘긴 타임스탬프가 없습니다 (자막에 단별 시각이 없는 영상일 수 있음)")
+        return pattern_data
+
+    filled = already = 0
+    for part in (pattern_data.get("parts") or []):
+        if not isinstance(part, dict):
+            continue
+        pname = _ts_key(part.get("part_name"))
+        for step in (part.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            ts = step.get("timestamps")
+            if not isinstance(ts, dict):
+                ts = step["timestamps"] = {"start": 0, "end": 0}
+
+            start = ts.get("start")
+            if isinstance(start, (int, float)) and start > 0:
+                already += 1
+                continue
+
+            sname = _ts_key(step.get("step_name"))
+            found = by_pair.get((pname, sname))
+            if found is None:
+                found = by_step.get(sname)   # 파츠명이 바뀌었을 때의 차선책
+            if found:
+                ts["start"] = found
+                ts.setdefault("end", 0)
+                filled += 1
+
+    print(f"⏱️ Pass 1 타임스탬프 {len(by_pair)}개 — Pass 2 전달 {already}개 / 서버 보충 {filled}개")
+    return pattern_data
+
+
 def validate_timestamps(pattern_data: dict, duration_sec: int = 0) -> dict:
     """단별 타임스탬프를 검증한다. 믿을 수 없는 값은 지운다.
 
@@ -1201,12 +1407,21 @@ async def health():
         },
         "available_models": available,
         "available_models_error": list_error,
+        # 오늘 AI를 몇 번 불렀는지. 한도를 조일지 풀지 판단하는 근거가 된다.
+        "rate_limit": {
+            "allowed_origins": ALLOWED_ORIGINS,
+            "per_ip_hour": RATE_LIMIT_PER_IP_HOUR or "무제한",
+            "per_ip_day": RATE_LIMIT_PER_IP_DAY or "무제한",
+            "global_day": RATE_LIMIT_GLOBAL_DAY or "무제한",
+            "global_used_24h": _window_count("global:day", _DAY, time.time()),
+        },
     }
 
 
 @app.post("/api/generate")
-async def generate_pattern(req: PatternRequest):
+async def generate_pattern(req: PatternRequest, request: Request):
     try:
+        reject_foreign_origin(request)
         url = req.youtube_url.strip()
 
         # 0. 주소 해석 (여기서 걸러야 잘못된 입력이 DB·AI까지 내려가지 않는다)
@@ -1240,6 +1455,10 @@ async def generate_pattern(req: PatternRequest):
                 "creators": cached_record.get("creators"),
                 "is_cached": True
             }
+
+        # 여기서부터가 돈이 나가는 구간이다(Supadata 1회 + Gemini 2회).
+        # 캐시로 끝나는 요청은 비용이 0이므로 한도에서 빼고, 이 지점에서만 센다.
+        check_rate_limit(client_ip(request))
 
         print(f"🔍 [New Request] 분석 시작: {canonical_url}")
 
@@ -1310,6 +1529,8 @@ async def generate_pattern(req: PatternRequest):
 
         pattern_data = sanitize_pattern_data(pattern_data)
         pattern_data = normalize_needle_type(pattern_data)
+        # 시각의 출처는 자막뿐이고 자막을 보는 건 Pass 1뿐이다. Pass 2가 흘렸으면 여기서 되살린다.
+        pattern_data = graft_pass1_timestamps(pattern_data, intermediate_json_str)
         pattern_data = validate_timestamps(pattern_data, meta_info.get("duration_sec") or 0)
         pattern_data = validate_stitch_counts(pattern_data, catalog)
         db_title = pattern_data.get("pattern_title") or meta_info["title"]
@@ -1341,6 +1562,13 @@ async def generate_pattern(req: PatternRequest):
 
     except HTTPException as he:
         raise he
+    except RateLimitExceeded as rle:
+        # Retry-After는 초 단위. 브라우저·크롤러가 이 값을 보고 물러난다.
+        raise HTTPException(
+            status_code=429,
+            detail=rle.message,
+            headers={"Retry-After": str(rle.retry_after)}
+        )
     except QuotaExceededError as qe:
         raise HTTPException(
             status_code=429,
@@ -1382,7 +1610,11 @@ async def get_pattern_by_id(pattern_id: str):
 
 
 @app.put("/api/pattern/{pattern_id}")
-async def update_pattern(pattern_id: str, req: PatternUpdateRequest):
+async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Request):
+    # ⚠️ 아직 인증이 없다. pattern_id만 알면 누구나 덮어쓸 수 있으므로
+    #    공개 홍보를 시작하기 전에 편집 토큰이 필요하다. (docs/ROADMAP.md 병행 과제)
+    #    지금은 최소한 다른 사이트에서 걸어오는 호출만 막아 둔다.
+    reject_foreign_origin(request)
     try:
         sanitized_data = sanitize_pattern_data(req.pattern_data)
         sanitized_data = normalize_needle_type(sanitized_data)

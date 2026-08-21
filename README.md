@@ -39,8 +39,8 @@ MVP 프로토타입이 동작 중입니다. 유튜브 링크 → 도안 표 → 
 | `main.py` | **현재 운영 중인 백엔드.** FastAPI 앱, 유튜브 수집, Gemini 2-Pass 호출, Supabase 저장 |
 | `prompts.py` | Pass 1(추출) / Pass 2(규격화) 시스템 프롬프트 |
 | `index.html` | 프론트엔드 전체. Tailwind CDN + 바닐라 JS 단일 파일 |
-| `app.py` | ⚠️ 초기 프로토타입(yt-dlp 기반). 현재 미사용 — 정리 대상 |
-| `requirements.txt` | 파이썬 의존성 |
+| `symbols/` | 도안 기호 SVG 32종 + 생성 스크립트. 규칙은 [docs/SYMBOLS.md](docs/SYMBOLS.md) |
+| `requirements.txt` | 파이썬 의존성 (코드가 직접 import 하는 6개만) |
 
 ### AI 파이프라인 (2-Pass)
 
@@ -86,6 +86,26 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 | `GEMINI_MODEL_PASS1` | ⬜ | `gemini-3.7-flash` | 자막 → 단별 추출 |
 | `GEMINI_MODEL_PASS2` | ⬜ | `gemini-3.1-flash-lite` | 규격화 · 코수 계산 |
 | `GEMINI_MODEL` | ⬜ | — | 위 둘을 지정하지 않았을 때의 공통 fallback |
+| `ALLOWED_ORIGINS` | ⬜ | Pages + localhost | 쉼표로 구분한 허용 출처. 커스텀 도메인을 붙이면 여기에 추가 |
+| `RATE_LIMIT_PER_IP_HOUR` | ⬜ | `5` | IP당 시간당 도안 생성 횟수. `0` = 무제한 |
+| `RATE_LIMIT_PER_IP_DAY` | ⬜ | `20` | IP당 일일 생성 횟수 |
+| `RATE_LIMIT_GLOBAL_DAY` | ⬜ | `100` | **전체 일일 상한 = 비용의 천장.** 무슨 일이 있어도 하루에 이 횟수 이상 AI를 부르지 않음 |
+
+#### 호출량 제한에 대하여
+
+`/api/generate`는 한 번 부를 때마다 Gemini 2회 + Supadata 1회가 나갑니다.
+주소만 알면 누구나 호출할 수 있으므로 세 겹으로 막습니다.
+
+1. **허용 출처(CORS + Origin 검사)** — 다른 사이트의 브라우저 코드가 우리 API를 쓰지 못하게 합니다
+2. **IP당 한도** — 한 사람이 연달아 퍼가는 것을 막습니다
+3. **전역 일일 한도** — 앞의 둘이 모두 뚫려도 손해가 여기서 멈춥니다
+
+> ⚠️ 1·2번은 **완벽한 방어가 아닙니다.** `curl`은 Origin 헤더를 보내지 않고, IP는 바꿀 수 있습니다.
+> 비용의 상한을 실제로 보장하는 것은 **3번뿐**이므로, 이 값을 감당 가능한 수준으로 정하세요.
+> 현재 소진량은 `GET /api/health`의 `rate_limit.global_used_24h`로 확인합니다.
+>
+> 카운터는 프로세스 메모리에 있어 **Render가 재시작하면 초기화됩니다.** 인스턴스 1대짜리
+> 프로토타입에서는 충분하지만, 여러 대로 늘리면 Supabase나 Redis로 옮겨야 합니다.
 
 #### Pass별로 모델을 나누는 이유
 
