@@ -490,6 +490,20 @@ DEFAULT_STITCH_DELTA = {
     # bo(코막음)는 일부러 넣지 않는다. 코를 없애는 기법이라 잘못 세면 오탐이 난다 → skipped 처리
 }
 
+# 이 기법 1개가 "앞 단에서 써 없애는" 코의 수.
+# 생산(stitch_delta)만 보면 약어가 틀렸는지 총 코수가 틀렸는지 구분할 수 없다.
+# 소비까지 같이 보면 "앞 단에 없는 코를 떴다"를 잡아내 약어 쪽을 지목할 수 있다.
+DEFAULT_STITCH_CONSUME = {
+    "ch": 0, "sl st": 0, "ss": 0, "mr": 0, "mc": 0,   # 앞 단 코를 쓰지 않음
+    "sc": 1, "hdc": 1, "dc": 1, "tr": 1, "dtr": 1,
+    "inc": 1,        # 한 코에 두 번 → 앞 단 1코 사용
+    "sc3inc": 1, "hdc2inc": 1, "dc2inc": 1, "tr3inc": 1,
+    "dec": 2, "sc3tog": 3, "dc2tog": 2, "dc3tog": 3, "dc4tog": 4,
+    "puff": 1, "bobble": 1, "popcorn": 1, "fpdc": 1, "bpdc": 1, "crab": 1,
+    "flo": 0, "blo": 0,
+    "k": 1, "p": 1, "yo": 0, "k2tog": 2, "ssk": 2, "co": 0,
+}
+
 CROCHET_CODES = {"sc", "hdc", "dc", "tr", "dtr", "mr", "sl st", "ch", "inc", "dec"}
 KNIT_CODES = {"k", "p", "k2tog", "p2tog", "ssk", "yo", "co", "bo", "kfb"}
 
@@ -643,6 +657,47 @@ def _parse_sequence(text: str, delta_map: dict, is_row_start: bool = False):
     return sum(v for _, v in values)
 
 
+def _count_consumed(text: str, consume_map: dict):
+    """이 단이 앞 단에서 써 없애는 코 수. 모르는 기법이 있으면 None"""
+    tokens = _split_top_level(text)
+    if not tokens:
+        return None
+
+    total = 0
+    for token in tokens:
+        token = token.strip()
+        if token.startswith("("):          # (…) x N 반복 그룹
+            depth, close = 0, -1
+            for i, ch in enumerate(token):
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        close = i
+                        break
+            if close == -1:
+                return None
+            repeat = re.search(r"[x×*]\s*(\d+)", token[close + 1:], re.IGNORECASE)
+            if not repeat:
+                return None
+            inner = _count_consumed(token[1:close], consume_map)
+            if inner is None:
+                return None
+            total += inner * int(repeat.group(1))
+            continue
+
+        parsed = _parse_plain_token(token)
+        if not parsed:
+            return None
+        code, count = parsed
+        if code not in consume_map:
+            return None
+        total += consume_map[code] * count
+
+    return total
+
+
 def _row_can_change_stitch_count(text: str) -> bool:
     """이 단이 코수를 바꿀 수 있는 요소(늘림·줄임·행 중간 사슬)를 포함하는가"""
     lowered = text.lower()
@@ -666,11 +721,12 @@ def _row_can_change_stitch_count(text: str) -> bool:
     return False
 
 
-def _validate_steps(steps, delta_map: dict) -> int:
+def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
     """단별 formula를 파싱해 total_stitches와 대조. 불일치 건수 반환"""
     if not isinstance(steps, list):
         return 0
 
+    consume_map = consume_map or DEFAULT_STITCH_CONSUME
     mismatch_count = 0
     prev_total = None
 
@@ -696,6 +752,7 @@ def _validate_steps(steps, delta_map: dict) -> int:
             continue
 
         parsed = _parse_sequence(formula.lower(), delta_map, is_row_start=True)
+        consumed = _count_consumed(formula.lower(), consume_map)
 
         if parsed is None:
             # 사전에 없는 기법이 섞인 줄 — 틀린 경고를 내느니 검증하지 않는다
@@ -703,11 +760,25 @@ def _validate_steps(steps, delta_map: dict) -> int:
         elif ack:
             # 사람이 이미 확인한 단. 검증은 돌리되 경고로 세지 않는다.
             step["validation"] = {"status": "acknowledged"}
-        elif parsed != expected:
-            step["validation"] = {
-                "status": "mismatch", "reason": "formula",
-                "expected": expected, "parsed": parsed
-            }
+        elif parsed != expected or (prev_total and consumed is not None
+                                    and consumed > 0 and consumed != prev_total):
+            # 생산(남는 코)과 소비(앞 단에서 쓰는 코)를 함께 보면
+            # 약어가 틀렸는지 총 코수가 틀렸는지 구분할 수 있다.
+            uses_wrong = (prev_total and consumed is not None
+                          and consumed > 0 and consumed != prev_total)
+            if parsed != expected and uses_wrong:
+                reason = "formula_stitches"   # 둘 다 어긋남 → 약어에 코가 더/덜 들어감
+            elif uses_wrong:
+                reason = "formula_uses"       # 남는 코는 맞는데 앞 단과 안 맞음
+            else:
+                reason = "total_stitches"     # 약어는 앞 단과 맞는데 총 코수가 다름
+
+            info = {"status": "mismatch", "reason": reason,
+                    "expected": expected, "parsed": parsed}
+            if uses_wrong:
+                info["uses"] = consumed
+                info["previous"] = prev_total
+            step["validation"] = info
             mismatch_count += 1
         elif (prev_total and prev_total != expected
               and not _row_can_change_stitch_count(formula)):
