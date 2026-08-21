@@ -172,10 +172,10 @@
             <table class="w-full text-left border-collapse text-xs">
               <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold">
                 <tr>
-                  <th class="py-3 px-3 w-10 text-center">체크</th>
-                  <th class="py-3 px-3 w-20 text-center">단수</th>
-                  <th class="py-3 px-3 w-16 text-center">영상</th>
-                  <th class="py-3 px-3 w-16 text-center">코수</th>
+                  <th class="py-3 px-2 w-12 text-center whitespace-nowrap">체크</th>
+                  <th class="py-3 px-2 w-16 text-center whitespace-nowrap">단수</th>
+                  <th class="py-3 px-2 w-14 text-center whitespace-nowrap">영상</th>
+                  <th class="py-3 px-2 w-14 text-center whitespace-nowrap">코수</th>
                   <th class="py-3 px-3 w-36">도안약어</th>
                   <th class="py-3 px-3">상세설명</th>
                 </tr>
@@ -480,6 +480,12 @@
       if (!v || v.status !== "mismatch") return "";
       if (v.reason === "continuity") {
         return `늘림·줄임이 없는 단인데 앞 단(${v.previous}코)과 코수가 달라요. 확인이 필요합니다.`;
+      }
+      // 앞 단에서 쓰는 코가 안 맞으면 약어 쪽이 틀렸을 가능성이 높다
+      if (v.reason === "formula_stitches" || v.reason === "formula_uses") {
+        return `이 약어는 앞 단 ${v.uses}코를 쓰는데 앞 단은 ${v.previous}코예요.`
+             + `\n약어에 코가 ${v.uses > v.previous ? "더" : "덜"} 들어간 것 같습니다.`
+             + (v.parsed !== v.expected ? `\n(약어대로면 ${v.parsed}코, 적힌 값은 ${v.expected}코)` : "");
       }
       return `도안 약어대로 세면 ${v.parsed}코인데 ${v.expected}코로 적혀 있어요. 확인이 필요합니다.`;
     }
