@@ -10,3 +10,4 @@ venv/
 # 환경변수 (API 키는 반드시 여기 또는 Render 환경변수로)
 .env
 .env.*
+backups/
