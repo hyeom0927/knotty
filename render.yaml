@@ -37,5 +37,16 @@ services:
         value: gemini-3.7-flash
       - key: GEMINI_MODEL_PASS2
         value: gemini-3.1-flash-lite
+      # 호출량 제한 (Gemini·Supadata 비용 방어). 0을 넣으면 그 한도가 꺼집니다.
+      # 값을 지정하지 않아도 코드의 기본값(5 / 20 / 100)으로 동작합니다.
+      - key: ALLOWED_ORIGINS
+        value: https://hyeom0927.github.io
+      - key: RATE_LIMIT_PER_IP_HOUR
+        value: "5"
+      - key: RATE_LIMIT_PER_IP_DAY
+        value: "20"
+      # 전체 일일 한도 = 비용의 상한선. 하루에 최대 몇 번까지 AI를 부를지 결정합니다.
+      - key: RATE_LIMIT_GLOBAL_DAY
+        value: "100"
       - key: PYTHON_VERSION
         value: "3.12"
