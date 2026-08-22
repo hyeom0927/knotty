@@ -38,7 +38,11 @@
         <span class="text-2xl">🧶</span>
         <h1 class="text-xl font-bold bg-gradient-to-r from-amber-600 to-rose-600 bg-clip-text text-transparent">Knotty</h1>
       </div>
-      <span class="text-xs bg-amber-100 text-amber-800 font-medium px-2.5 py-1 rounded-full">MVP Prototype</span>
+      <nav class="flex items-center gap-1 text-xs font-semibold">
+        <button onclick="showHome()" class="px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition">영상 정리</button>
+        <button onclick="showBrowse()" class="px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition">둘러보기</button>
+        <button onclick="showGlossary()" class="px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition">용어사전</button>
+      </nav>
     </div>
   </header>
 
@@ -56,6 +60,59 @@
           <span>영상 정리하기</span>
         </button>
       </div>
+    </section>
+
+    <!-- 최근 본 정리. 로그인 없이 localStorage에 pattern_id만 쌓는다. -->
+    <section id="recent-section" class="hidden bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-bold text-slate-900">🕘 최근 본 정리</h2>
+        <button onclick="clearRecent()" class="text-xs text-slate-400 hover:text-slate-600 transition">기록 지우기</button>
+      </div>
+      <div id="recent-list" class="flex flex-wrap gap-2"></div>
+    </section>
+
+    <!-- 둘러보기 (게시판) -->
+    <section id="browse-section" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-lg font-bold text-slate-900">둘러보기</h2>
+        <div class="flex items-center gap-1 text-xs font-semibold">
+          <button id="sort-recent" onclick="setBrowseSort('recent')" class="px-3 py-1.5 rounded-lg transition">최신순</button>
+          <button id="sort-popular" onclick="setBrowseSort('popular')" class="px-3 py-1.5 rounded-lg transition">인기순</button>
+        </div>
+      </div>
+      <input type="text" id="browse-search" placeholder="작품명으로 검색"
+             class="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm">
+      <div id="browse-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+      <div class="flex items-center justify-between pt-1">
+        <button id="browse-prev" onclick="changeBrowsePage(-1)" class="text-xs font-semibold text-slate-600 hover:text-amber-700 disabled:opacity-30 disabled:cursor-not-allowed transition">← 이전</button>
+        <span id="browse-count" class="text-xs text-slate-400"></span>
+        <button id="browse-next" onclick="changeBrowsePage(1)" class="text-xs font-semibold text-slate-600 hover:text-amber-700 disabled:opacity-30 disabled:cursor-not-allowed transition">다음 →</button>
+      </div>
+    </section>
+
+    <!-- 용어사전 -->
+    <section id="glossary-section" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+      <div>
+        <h2 class="text-lg font-bold text-slate-900">뜨개 용어사전</h2>
+        <p class="text-xs text-slate-500 mt-1">Knotty가 도안을 정리할 때 쓰는 기법 사전 그대로입니다.</p>
+      </div>
+      <input type="text" id="glossary-search" placeholder="약어나 한국어 이름으로 검색 (예: sc, 짧은뜨기)"
+             class="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold text-xs">
+            <tr>
+              <th class="py-2 px-3 w-14 text-center">기호</th>
+              <th class="py-2 px-3 w-28">약어</th>
+              <th class="py-2 px-3 w-40">한국어</th>
+              <th class="py-2 px-3">설명</th>
+              <th class="py-2 px-3 w-14 text-center">영상</th>
+            </tr>
+          </thead>
+          <tbody id="glossary-list" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+      <p id="glossary-count" class="text-xs text-slate-400"></p>
     </section>
 
     <div id="loading" class="hidden bg-white p-12 rounded-2xl shadow-sm border border-slate-200 text-center space-y-4">
@@ -203,7 +260,17 @@
 
         <div class="pt-4 border-t border-slate-100 flex justify-between items-center text-[10px] text-slate-400 page-break-avoid">
           <span id="card-credit">정리: Knotty 🧶</span>
-          <span id="card-date">2026.08.19</span>
+          <span class="flex items-center gap-3">
+            <span id="card-views" class="hidden"></span>
+            <span id="card-date">2026.08.19</span>
+          </span>
+        </div>
+
+        <!-- 신고. 도안 수십 건 규모에서는 표 하나면 충분하다. -->
+        <div class="text-center pt-1">
+          <button onclick="reportPattern()" class="text-[11px] text-slate-400 hover:text-rose-600 transition">
+            🚨 이 정리 이상해요
+          </button>
         </div>
 
       </article>
@@ -230,10 +297,27 @@
     }
 
     window.addEventListener("DOMContentLoaded", async () => {
+      // 검색은 입력이 멈춘 뒤에 보낸다. 글자마다 부르면 서버를 두들기게 된다.
+      let browseTimer, glossaryTimer;
+      document.getElementById("browse-search").addEventListener("input", () => {
+        clearTimeout(browseTimer);
+        browseTimer = setTimeout(() => { browsePage = 1; loadBrowse(); }, 300);
+      });
+      document.getElementById("glossary-search").addEventListener("input", () => {
+        clearTimeout(glossaryTimer);
+        glossaryTimer = setTimeout(renderGlossary, 150);   // 이미 받아둔 목록이라 즉시 거른다
+      });
+
       const urlParams = new URLSearchParams(window.location.search);
       const patternId = urlParams.get("id");
       if (patternId) {
         await loadPatternById(patternId);
+      } else if (urlParams.get("view") === "browse") {
+        showBrowse();
+      } else if (urlParams.get("view") === "glossary") {
+        showGlossary();
+      } else {
+        renderRecent();
       }
     });
 
@@ -259,6 +343,7 @@
         
         history.pushState(null, "", `?id=${currentPatternId}`);
         renderPatternCard(result);
+        rememberRecent(currentPatternId, (result.data || {}).pattern_title);
 
       } catch (err) {
         alert("에러: " + err.message);
@@ -280,7 +365,10 @@
         currentPatternData = record.pattern_data;
         currentRootMeta = record;
 
+        document.getElementById("browse-section").classList.add("hidden");
+        document.getElementById("glossary-section").classList.add("hidden");
         renderPatternCard(record);
+        rememberRecent(record.id, record.title || (record.pattern_data || {}).pattern_title);
       } catch (err) {
         alert("에러: " + err.message);
       } finally {
@@ -319,6 +407,12 @@
         creator.channel_name ? `원작자: ${channelName} · 정리: Knotty 🧶` : "정리: Knotty 🧶";
 
       renderShopLinks(data.shop_links);
+
+      // 조회수는 저장된 도안을 열었을 때만 의미가 있다 (방금 만든 것은 항상 1)
+      const viewsEl = document.getElementById("card-views");
+      const views = rootMeta.view_count;
+      viewsEl.classList.toggle("hidden", !views);
+      if (views) viewsEl.innerText = `👁 ${views}`;
 
       // 3. 썸네일 링크 바인딩
       document.getElementById("card-youtube-link").href = mainYoutubeUrl;
@@ -916,6 +1010,238 @@
     function showLoading(show) {
       document.getElementById("loading").classList.toggle("hidden", !show);
       if (show) document.getElementById("result-container").classList.add("hidden");
+    }
+
+    // ─────────────────────────────────────────────
+    // 신고
+    // ─────────────────────────────────────────────
+    async function reportPattern() {
+      if (!currentPatternId) return;
+      const message = prompt("어떤 점이 이상한가요?\n(예: 몸판 3단 코수가 맞지 않아요)");
+      if (message === null) return;
+      if (!message.trim()) { alert("내용을 적어 주세요."); return; }
+      try {
+        const res = await fetch(`${API_BASE}/api/reports`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pattern_id: currentPatternId, message: message.trim(), step_ref: "" })
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || "저장 실패");
+        alert("알려주셔서 감사합니다! 확인 후 고치겠습니다.");
+      } catch (err) {
+        alert("신고를 보내지 못했어요: " + err.message);
+      }
+    }
+
+    // ─────────────────────────────────────────────
+    // 최근 본 정리 (로그인 없이 localStorage에 id만 쌓는다)
+    // ─────────────────────────────────────────────
+    const RECENT_KEY = "knotty_recent";
+    const RECENT_MAX = 12;
+
+    function loadRecent() {
+      try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); }
+      catch (e) { return []; }   // 저장값이 깨졌으면 조용히 비운다
+    }
+
+    function rememberRecent(id, title) {
+      if (!id) return;
+      const list = loadRecent().filter(x => x.id !== id);
+      list.unshift({ id, title: title || "제목 없음" });
+      try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch (e) {}
+      renderRecent();
+    }
+
+    function clearRecent() {
+      try { localStorage.removeItem(RECENT_KEY); } catch (e) {}
+      renderRecent();
+    }
+
+    function renderRecent() {
+      const list = loadRecent();
+      const box = document.getElementById("recent-section");
+      const wrap = document.getElementById("recent-list");
+      // 결과를 보고 있을 때는 접어 둔다. 화면을 두 번 채울 이유가 없다.
+      const onResult = !document.getElementById("result-container").classList.contains("hidden");
+      box.classList.toggle("hidden", !list.length || onResult);
+      wrap.innerHTML = "";
+      list.forEach(item => {
+        const a = document.createElement("a");
+        a.href = `?id=${item.id}`;
+        a.className = "text-xs bg-slate-50 border border-slate-200 hover:border-amber-500 "
+                    + "hover:text-amber-700 text-slate-600 px-3 py-1.5 rounded-lg transition";
+        a.innerText = item.title.length > 22 ? item.title.slice(0, 22) + "…" : item.title;
+        wrap.appendChild(a);
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // 화면 전환
+    // ─────────────────────────────────────────────
+    function hideAllSections() {
+      ["browse-section", "glossary-section", "result-container", "loading"]
+        .forEach(id => document.getElementById(id).classList.add("hidden"));
+    }
+
+    function showHome() {
+      hideAllSections();
+      renderRecent();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function showBrowse() {
+      hideAllSections();
+      document.getElementById("browse-section").classList.remove("hidden");
+      document.getElementById("recent-section").classList.add("hidden");
+      loadBrowse();
+    }
+
+    function showGlossary() {
+      hideAllSections();
+      document.getElementById("glossary-section").classList.remove("hidden");
+      document.getElementById("recent-section").classList.add("hidden");
+      loadGlossary();
+    }
+
+    // ─────────────────────────────────────────────
+    // 둘러보기 (게시판)
+    // ─────────────────────────────────────────────
+    let browseSort = "recent";
+    let browsePage = 1;
+    let browseTotal = 0;
+    const BROWSE_SIZE = 12;
+
+    function setBrowseSort(sort) {
+      browseSort = sort;
+      browsePage = 1;
+      loadBrowse();
+    }
+
+    function changeBrowsePage(delta) {
+      browsePage = Math.max(1, browsePage + delta);
+      loadBrowse();
+      document.getElementById("browse-section").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function loadBrowse() {
+      const listEl = document.getElementById("browse-list");
+      const q = document.getElementById("browse-search").value.trim();
+
+      ["recent", "popular"].forEach(s => {
+        document.getElementById(`sort-${s}`).className = s === browseSort
+          ? "px-3 py-1.5 rounded-lg bg-amber-600 text-white transition"
+          : "px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition";
+      });
+
+      listEl.innerHTML = `<p class="text-sm text-slate-400 col-span-full py-6 text-center">불러오는 중…</p>`;
+      try {
+        const params = new URLSearchParams({ sort: browseSort, page: browsePage, size: BROWSE_SIZE });
+        if (q) params.set("q", q);
+        const res = await fetch(`${API_BASE}/api/patterns?${params}`);
+        if (!res.ok) throw new Error("목록을 불러오지 못했어요.");
+        const data = await res.json();
+        browseTotal = data.total || 0;
+        renderBrowse(data.items || []);
+      } catch (err) {
+        listEl.innerHTML = `<p class="text-sm text-rose-500 col-span-full py-6 text-center">${escapeHtml(err.message)}</p>`;
+      }
+    }
+
+    function renderBrowse(items) {
+      const listEl = document.getElementById("browse-list");
+      listEl.innerHTML = "";
+
+      if (!items.length) {
+        listEl.innerHTML = `<p class="text-sm text-slate-400 col-span-full py-6 text-center">아직 정리된 영상이 없어요.</p>`;
+      }
+
+      items.forEach(item => {
+        const a = document.createElement("a");
+        a.href = `?id=${item.id}`;
+        a.className = "block border border-slate-200 rounded-xl overflow-hidden hover:border-amber-500 hover:shadow-sm transition";
+        const views = item.view_count ? `👁 ${item.view_count}` : "";
+        a.innerHTML = `
+          <div class="aspect-video bg-slate-100 overflow-hidden">
+            ${item.thumbnail_url ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" class="w-full h-full object-cover" loading="lazy">` : ""}
+          </div>
+          <div class="p-3 space-y-1">
+            <p class="text-sm font-semibold text-slate-800 leading-snug line-clamp-2">${escapeHtml(item.title || "제목 없음")}</p>
+            <p class="text-xs text-slate-400 flex justify-between gap-2">
+              <span class="truncate">${escapeHtml(item.channel_name || "")}</span>
+              <span class="shrink-0">${views}</span>
+            </p>
+          </div>`;
+        listEl.appendChild(a);
+      });
+
+      const from = (browsePage - 1) * BROWSE_SIZE;
+      document.getElementById("browse-count").innerText =
+        browseTotal ? `${from + 1}–${Math.min(from + items.length, browseTotal)} / 총 ${browseTotal}개` : "";
+      document.getElementById("browse-prev").disabled = browsePage <= 1;
+      document.getElementById("browse-next").disabled = from + items.length >= browseTotal;
+    }
+
+    // ─────────────────────────────────────────────
+    // 용어사전
+    // ─────────────────────────────────────────────
+    let glossaryCache = null;
+
+    async function loadGlossary() {
+      if (!glossaryCache) {
+        document.getElementById("glossary-list").innerHTML =
+          `<tr><td colspan="5" class="py-6 text-center text-sm text-slate-400">불러오는 중…</td></tr>`;
+        try {
+          const res = await fetch(`${API_BASE}/api/craft-terms`);
+          if (!res.ok) throw new Error("용어사전을 불러오지 못했어요.");
+          glossaryCache = (await res.json()).items || [];
+        } catch (err) {
+          document.getElementById("glossary-list").innerHTML =
+            `<tr><td colspan="5" class="py-6 text-center text-sm text-rose-500">${escapeHtml(err.message)}</td></tr>`;
+          return;
+        }
+      }
+      renderGlossary();
+    }
+
+    function renderGlossary() {
+      const q = document.getElementById("glossary-search").value.trim().toLowerCase();
+      const rows = (glossaryCache || []).filter(t =>
+        !q || `${t.standard_code} ${t.kr_name} ${t.description || ""}`.toLowerCase().includes(q));
+
+      const body = document.getElementById("glossary-list");
+      body.innerHTML = "";
+      rows.forEach(t => {
+        const tr = document.createElement("tr");
+        tr.className = "hover:bg-slate-50 transition align-top";
+        const symbol = t.thumbnail_url
+          ? `<img src="${escapeHtml(t.thumbnail_url)}" alt="" class="w-6 h-6 mx-auto object-contain"
+                  onerror="this.style.display='none'">`
+          : `<span class="text-slate-300">-</span>`;
+        const video = t.video_url
+          ? `<a href="${escapeHtml(formatUrl(t.video_url))}" target="_blank" rel="noopener noreferrer"
+                class="text-red-600 hover:text-red-700 transition" title="기법 영상 보기">
+               <svg class="w-5 h-5 fill-current mx-auto" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></a>`
+          : `<span class="text-slate-300">-</span>`;
+        // 대바늘/코바늘, 그리고 formula에 쓰이지 않는 '용어'인지 구분해 준다
+        const tags = [t.craft_type === "knit" ? "대바늘" : "코바늘"];
+        if (t.entry_type !== "stitch") tags.push("용어");
+        tr.innerHTML = `
+          <td class="py-2.5 px-3 text-center">${symbol}</td>
+          <td class="py-2.5 px-3 font-mono font-bold text-amber-700">${escapeHtml(prettyCode(t.standard_code) || "-")}</td>
+          <td class="py-2.5 px-3">
+            <span class="text-slate-800 font-medium">${escapeHtml(t.kr_name || "-")}</span>
+            <span class="block text-[10px] text-slate-400">${tags.join(" · ")}</span>
+          </td>
+          <td class="py-2.5 px-3 text-xs text-slate-500 leading-relaxed">${escapeHtml(t.description || "")}</td>
+          <td class="py-2.5 px-3 text-center">${video}</td>`;
+        body.appendChild(tr);
+      });
+
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-sm text-slate-400">찾는 기법이 없어요.</td></tr>`;
+      }
+      document.getElementById("glossary-count").innerText =
+        `${rows.length}개${q ? ` (전체 ${glossaryCache.length}개 중)` : ""}`;
     }
   </script>
 </body>

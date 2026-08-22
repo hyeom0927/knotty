@@ -243,6 +243,11 @@ class PatternRequest(BaseModel):
 class PatternUpdateRequest(BaseModel):
     pattern_data: dict
 
+class ReportRequest(BaseModel):
+    pattern_id: str
+    message: str
+    step_ref: str = ""
+
 # ==========================================
 # 3. 유틸리티, 텍스트 전처리 및 AI 추출 함수
 # ==========================================
@@ -2032,6 +2037,123 @@ async def generate_pattern(req: PatternRequest, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def bump_view_count(pattern_id: str, current) -> int:
+    """조회수를 1 올린다.
+
+    읽고 더해서 쓰는 방식이라 **동시 요청이 겹치면 몇 건 샐 수 있다.**
+    정확히 세려면 Supabase에 원자적 증가 함수(RPC)를 만들어야 하는데,
+    "요즘 유행하는 도안"을 고르는 데 쓰는 값이라 몇 건의 오차는 순위를 바꾸지 않는다.
+    도안이 수백 건이 되고 순위 다툼이 생기면 그때 RPC로 옮긴다.
+
+    실패해도 조회 자체는 막지 않는다. 조회수는 도안을 보여주는 일보다 덜 중요하다.
+    """
+    count = (current or 0) + 1
+    try:
+        supabase.table("patterns").update({"view_count": count}).eq("id", pattern_id).execute()
+    except Exception as e:
+        print(f"⚠️ 조회수 증가 실패(무시): {str(e)[:100]}")
+        return current or 0
+    return count
+
+
+@app.get("/api/patterns")
+async def list_patterns(sort: str = "recent", page: int = 1, size: int = 12, q: str = ""):
+    """도안 목록. 게시판·인기 도안·검색이 이 하나를 같이 쓴다.
+
+    본문(`pattern_data`)은 통째로 크므로 목록에서는 빼고, 카드에 필요한 것만 돌려준다.
+    """
+    page = max(1, page)
+    size = max(1, min(size, 48))          # 한 번에 너무 많이 퍼가지 못하게 상한을 둔다
+    start = (page - 1) * size
+
+    try:
+        query = supabase.table("patterns").select(
+            "id,title,thumbnail_url,youtube_url,video_id,view_count,created_at,creators(channel_name,channel_url)",
+            count="exact",
+        )
+        # 숨김 처리된 도안은 목록에 내보내지 않는다 (창작자 요청 시 사용)
+        query = query.or_("is_hidden.is.null,is_hidden.eq.false")
+
+        if q.strip():
+            # 작품명으로 찾는다. 채널명 검색은 조인 대상이라 여기서 걸 수 없어
+            # 아래에서 받아온 결과로 한 번 더 거른다.
+            query = query.ilike("title", f"%{q.strip()}%")
+
+        if sort == "popular":
+            query = query.order("view_count", desc=True).order("created_at", desc=True)
+        else:
+            query = query.order("created_at", desc=True)
+
+        res = query.range(start, start + size - 1).execute()
+        items = res.data or []
+
+        for item in items:
+            creator = item.pop("creators", None) or {}
+            item["channel_name"] = creator.get("channel_name")
+            item["channel_url"] = creator.get("channel_url")
+
+        return {
+            "status": "success",
+            "items": items,
+            "page": page,
+            "size": size,
+            "total": res.count if res.count is not None else len(items),
+            "sort": sort,
+        }
+    except Exception as e:
+        print(f"❌ Error in GET /api/patterns: {str(e)}")
+        raise HTTPException(status_code=500, detail="목록을 불러오지 못했어요.")
+
+
+@app.get("/api/craft-terms")
+async def list_craft_terms():
+    """용어사전. 기법 표를 그대로 보여준다.
+
+    도안이 이미 이 표를 기준으로 만들어지므로, 사전 화면은 같은 데이터를 다르게 보여주는 것뿐이다.
+    """
+    catalog = get_craft_terms_catalog()
+    terms = [
+        {
+            "standard_code": t.get("standard_code"),
+            "kr_name": t.get("kr_name"),
+            "craft_type": t.get("craft_type"),
+            "entry_type": t.get("entry_type"),
+            "description": t.get("description"),
+            "video_url": t.get("video_url"),
+            "thumbnail_url": t.get("thumbnail_url"),
+            "stitch_delta": t.get("stitch_delta"),
+        }
+        for t in catalog
+    ]
+    terms.sort(key=lambda t: (t.get("craft_type") or "", t.get("entry_type") or "", t.get("standard_code") or ""))
+    return {"status": "success", "items": terms, "total": len(terms)}
+
+
+@app.post("/api/reports")
+async def create_report(req: ReportRequest, request: Request):
+    """"이 도안 이상해요" 신고.
+
+    도안 수십 건 규모에서는 별도 에러 트래킹 도구가 필요 없다. 표 하나면 충분하다.
+    """
+    reject_foreign_origin(request)
+    message = (req.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="어떤 점이 이상한지 알려 주세요.")
+
+    try:
+        supabase.table("reports").insert({
+            "pattern_id": req.pattern_id,
+            "message": message[:1000],
+            "step_ref": (req.step_ref or "").strip()[:100] or None,
+        }).execute()
+    except Exception as e:
+        print(f"❌ Error in POST /api/reports: {str(e)}")
+        raise HTTPException(status_code=500, detail="신고를 저장하지 못했어요. 잠시 후 다시 시도해 주세요.")
+
+    print(f"🚨 신고 접수 — pattern={req.pattern_id} step={req.step_ref!r}")
+    return {"status": "success"}
+
+
 @app.get("/api/pattern/{pattern_id}")
 async def get_pattern_by_id(pattern_id: str):
     try:
@@ -2042,6 +2164,7 @@ async def get_pattern_by_id(pattern_id: str):
         record = res.data[0]
         pattern_data = record.get("pattern_data", {})
         record["craft_terms"] = get_matching_craft_terms(pattern_data)
+        record["view_count"] = bump_view_count(pattern_id, record.get("view_count"))
 
         return {
             "status": "success",

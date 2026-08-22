@@ -28,7 +28,10 @@ MVP 프로토타입이 동작 중입니다. 유튜브 링크 → 도안 표 → 
 - **유튜브 댓글용 텍스트** — `1:24  1단  mr, ch 1, sc 6 (6코)` 형태로 복사됩니다.
   유튜브가 시각을 재생 링크로 바꿔 주므로 **댓글이 그대로 그 영상의 목차**가 됩니다
 
-**다음 차례는 실 정보 구조화(굵기·게이지)와 탐색 기능(게시판·조회수)입니다.**
+- **둘러보기 · 용어사전** — 저장된 정리를 최신순/인기순으로 훑고 작품명으로 찾을 수 있습니다.
+  기법 사전은 그대로 용어사전 화면이 됩니다
+
+**다음 차례는 수익화(P4)입니다 — 준비물 제휴 링크, 지표 수집.**
 
 기능별 구현 현황과 미구현 목록은 **[docs/FEATURES.md](docs/FEATURES.md)**,
 앞으로의 작업 순서는 **[docs/ROADMAP.md](docs/ROADMAP.md)** 에 정리되어 있습니다.
@@ -154,6 +157,10 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 | `POST` | `/api/generate` | `{"youtube_url": "..."}` → 도안 생성. 동일 URL이 이미 있으면 DB 캐시를 즉시 반환 |
 | `GET` | `/api/pattern/{id}` | 저장된 도안 단건 조회 (`?id=` 공유 링크가 이걸 씁니다) |
 | `PUT` | `/api/pattern/{id}` | 사용자가 수정한 도안 저장 |
+| `GET` | `/api/patterns` | 목록. `?sort=recent\|popular&page=&size=&q=` (본문은 빼고 카드용 정보만) |
+| `GET` | `/api/craft-terms` | 용어사전용 기법 전체 목록 |
+| `POST` | `/api/reports` | `{"pattern_id", "message", "step_ref"}` → 오류 신고 |
+| `GET` | `/api/health` | 모델·환경변수·호출량 소진 확인 |
 
 응답에는 `pattern_data`(도안 본문), `craft_terms`(사용된 기법 목록), `creators`(채널 정보)가 함께 담깁니다.
 데이터 구조와 DB 스키마는 [docs/DATA_MODEL.md](docs/DATA_MODEL.md)를 참고하세요.
