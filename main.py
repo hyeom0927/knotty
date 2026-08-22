@@ -1109,6 +1109,51 @@ def extract_shop_links(description: str) -> dict:
     return result
 
 
+def build_yarn_search_links(pattern_data: dict, shop_links: dict) -> list:
+    """설명란에 구매 링크가 없을 때, 실 이름으로 **검색** 링크를 만든다.
+
+    창작자가 링크를 안 걸어 둔 영상이 실제로 절반이 넘는다(7건 중 3건).
+    그렇다고 없는 주소를 지어낼 수는 없으므로, 확실히 존재하는 검색 결과로 보낸다.
+
+    **"구매하기"가 아니라 "검색"이라고 부르는 것이 중요하다.** 이건 우리가 만든 추측이지
+    창작자가 지정한 판매처가 아니다. 둘을 섞으면 엉뚱한 가게를 원작자 공식 링크처럼
+    보이게 만든다.
+
+    설명란에서 뽑은 링크가 이미 있으면 만들지 않는다. 창작자가 직접 건 링크가 언제나 낫다.
+    """
+    if shop_links.get("supply") or shop_links.get("pattern"):
+        return []
+
+    materials = (pattern_data or {}).get("materials")
+    if not isinstance(materials, dict):
+        return []
+
+    links, seen = [], set()
+    for yarn in (materials.get("yarn") or []):
+        raw = (yarn.get("name") or "").strip() if isinstance(yarn, dict) else str(yarn).strip()
+        # 괄호 안의 색번호는 검색을 오히려 방해한다. ("오메가 (186번 귤색)" → "오메가")
+        raw = re.sub(r"[（(].*?[)）]", " ", raw)
+
+        # 예전에 저장된 도안은 `"로미오실 (27번), 줄리엣실 (63번)"`처럼 실 두 종이
+        # 한 문자열에 들어 있다. **저장 구조는 그대로 두고 검색어만 쪼갠다** —
+        # 여기서 나눈 결과로 없던 실을 만들어 내면 도안 자체가 틀려진다.
+        for name in re.split(r"[,/·]| 및 ", raw):
+            name = name.strip(" ,·/")
+            # "빨간색 실"처럼 상품명이 아닌 것은 검색해도 소용없다
+            if len(name) < 2 or name in seen or re.fullmatch(r"[가-힣]*색\s*실?", name):
+                continue
+            seen.add(name)
+            query = urllib.parse.quote(f"{name} 뜨개실")
+            links.append({
+                "label": name,
+                "url": f"https://search.shopping.naver.com/search/all?query={query}",
+            })
+
+    if links:
+        print(f"🔎 실 검색 링크 {len(links)}개 생성 (설명란에 구매 링크가 없어 대체)")
+    return links
+
+
 def _ts_key(text) -> str:
     """단 이름을 대조용으로 정규화한다. ('11 ~ 13단' → '11~13단')"""
     return re.sub(r"\s+", "", str(text or "")).lower()
@@ -1243,6 +1288,71 @@ def validate_timestamps(pattern_data: dict, duration_sec: int = 0) -> dict:
     elif kept:
         print(f"⏱️ 타임스탬프 {kept}개 모두 유효")
 
+    return pattern_data
+
+
+_YARN_FIELDS = ("name", "color", "weight", "amount", "gauge", "source")
+
+
+def normalize_yarn(pattern_data: dict) -> dict:
+    """materials.yarn을 객체 배열로 통일한다.
+
+    세 가지 형태가 모두 들어온다.
+      - 문자열   `"오메가 (186번 귤색)"`          ← 예전에 저장된 도안
+      - 객체     `{...}`                        ← AI가 배열을 깜빡한 경우
+      - 객체 배열 `[{...}, {...}]`               ← 지금의 정상 형태
+
+    **문자열을 쉼표로 쪼개지 않는다.** `"오메가 (186번 귤색)"`처럼 이름 안에 쉼표가
+    들어갈 수 있어서, 쪼개면 없던 실이 생긴다. 통째로 `name`에 담고 그대로 보여준다.
+
+    게이지는 특별히 다룬다. 근거(`source`)가 없는데 게이지만 있으면 **`inferred`로 낮춘다.**
+    게이지가 틀리면 사용자가 완성 크기를 통째로 잘못 잡으므로,
+    확신이 없을 때는 화면에 "추정"이라고 알려 주는 편이 낫다.
+    """
+    if not isinstance(pattern_data, dict):
+        return pattern_data
+
+    materials = pattern_data.get("materials")
+    if not isinstance(materials, dict) or "yarn" not in materials:
+        return pattern_data
+
+    raw = materials.get("yarn")
+    if isinstance(raw, str):
+        items = [{"name": raw.strip(), "source": "video"}] if raw.strip() else []
+    elif isinstance(raw, dict):
+        items = [raw]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        items = []
+
+    cleaned = []
+    for item in items:
+        if isinstance(item, str):
+            item = {"name": item.strip()}
+        if not isinstance(item, dict):
+            continue
+
+        entry = {}
+        for field in _YARN_FIELDS:
+            value = item.get(field)
+            if isinstance(value, str):
+                value = value.strip()
+                # AI가 "모름"을 빈 문자열이나 "없음"으로 적는 경우가 있다. null로 통일한다.
+                if value in ("", "-", "없음", "미기재", "null", "None", "모름"):
+                    value = None
+            entry[field] = value
+
+        if not entry.get("name"):
+            continue
+        if entry.get("source") not in ("video", "inferred"):
+            entry["source"] = "inferred" if entry.get("gauge") or entry.get("weight") else "video"
+        cleaned.append(entry)
+
+    if cleaned:
+        materials["yarn"] = cleaned
+        with_gauge = sum(1 for y in cleaned if y.get("gauge"))
+        print(f"🧵 실 {len(cleaned)}종 정리 — 게이지 있는 실 {with_gauge}종")
     return pattern_data
 
 
@@ -1757,10 +1867,14 @@ async def generate_pattern(req: PatternRequest, request: Request):
 
         pattern_data = sanitize_pattern_data(pattern_data)
         pattern_data = normalize_needle_type(pattern_data)
+        pattern_data = normalize_yarn(pattern_data)
         # 시각의 출처는 자막뿐이고 자막을 보는 건 Pass 1뿐이다. Pass 2가 흘렸으면 여기서 되살린다.
         pattern_data = graft_pass1_timestamps(pattern_data, intermediate_json_str)
         # 원작자에게 트래픽을 되돌려 주는 링크. AI가 지어낼 수 없도록 설명란에서 직접 뽑는다.
         shop_links = extract_shop_links(meta_info.get("description") or "")
+        search = build_yarn_search_links(pattern_data, shop_links)
+        if search:
+            shop_links["search"] = search
         if shop_links:
             pattern_data["shop_links"] = shop_links
         pattern_data = validate_timestamps(pattern_data, meta_info.get("duration_sec") or 0)
@@ -1864,6 +1978,7 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Re
         else:
             sanitized_data.pop("shop_links", None)
         sanitized_data = normalize_needle_type(sanitized_data)
+        sanitized_data = normalize_yarn(sanitized_data)
         sanitized_data = validate_timestamps(sanitized_data, 0)
         # 사용자가 코수를 고쳤을 수 있으므로 저장 시점에 다시 검증한다
         sanitized_data = validate_stitch_counts(sanitized_data, get_craft_terms_catalog())

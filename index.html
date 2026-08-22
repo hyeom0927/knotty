@@ -139,6 +139,7 @@
             <div class="bg-white p-3 rounded-lg border border-slate-200">
               <span class="text-slate-400 block mb-1">사용 실</span>
               <p id="mat-yarn" class="font-semibold text-slate-800 editable">-</p>
+              <div id="mat-yarn-detail" class="mt-2 space-y-1.5"></div>
             </div>
             <div class="bg-white p-3 rounded-lg border border-slate-200">
               <span class="text-slate-400 block mb-1">바늘 스펙</span>
@@ -332,7 +333,7 @@
 
       // 준비물 정보
       const mat = data.materials || {};
-      document.getElementById("mat-yarn").innerText = mat.yarn || "미기재";
+      renderYarn(mat.yarn);
       
       const needle = mat.needle || {};
       const needleText = typeof needle === 'object' ? `${needle.type || ''} (${needle.size || '미기재'})` : needle;
@@ -512,13 +513,57 @@
       return `도안 약어대로 세면 ${v.parsed}코인데 ${v.expected}코로 적혀 있어요. 확인이 필요합니다.`;
     }
 
+    // 실 정보를 그린다. 예전 도안은 문자열 하나뿐이라 세 형태를 모두 받는다.
+    //   "오메가 (186번 귤색)"  /  {...}  /  [{...}, {...}]
+    //
+    // 굵기·게이지는 `source`가 inferred면 "추정"을 붙인다.
+    // 게이지가 틀리면 완성 크기가 통째로 달라지므로, 우리가 추론한 값을
+    // 영상에서 들은 값인 것처럼 보여주면 안 된다.
+    function renderYarn(yarn) {
+      const nameEl = document.getElementById("mat-yarn");
+      const detailEl = document.getElementById("mat-yarn-detail");
+      detailEl.innerHTML = "";
+
+      if (!yarn) { nameEl.innerText = "미기재"; return; }
+      if (typeof yarn === "string") { nameEl.innerText = yarn; return; }
+
+      const items = Array.isArray(yarn) ? yarn : [yarn];
+      const names = items.map(y => [y.name, y.color].filter(Boolean).join(" ")).filter(Boolean);
+      nameEl.innerText = names.join(", ") || "미기재";
+
+      items.forEach(y => {
+        // 이름·색은 위에 이미 나왔다. 여기서는 굵기·양·게이지만 덧붙인다.
+        const bits = [];
+        if (y.weight) bits.push(`굵기 ${y.weight}`);
+        if (y.amount) bits.push(y.amount);
+        if (y.gauge) bits.push(`게이지 ${y.gauge}`);
+        if (!bits.length) return;
+
+        const est = y.source === "inferred"
+          ? ` <span class="text-amber-600" title="영상에서 직접 말한 값이 아니라 실 이름 등에서 추론한 값이에요. 실제와 다를 수 있습니다.">(추정)</span>`
+          : "";
+        const row = document.createElement("p");
+        row.className = "text-[11px] text-slate-500 font-normal leading-snug";
+        row.innerHTML = `${items.length > 1 ? escapeHtml(y.name) + " · " : ""}${escapeHtml(bits.join(" · "))}${est}`;
+        detailEl.appendChild(row);
+      });
+
+      // 게이지가 하나도 없으면 알려 준다. 없는 걸 지어내는 것보다 없다고 말하는 편이 낫다.
+      if (!items.some(y => y.gauge)) {
+        const note = document.createElement("p");
+        note.className = "text-[11px] text-slate-400 font-normal leading-snug";
+        note.innerText = "게이지는 영상에 언급되지 않았어요. 완성 크기가 다를 수 있습니다.";
+        detailEl.appendChild(note);
+      }
+    }
+
     // 원작자의 판매 링크를 그린다.
     // 도안 링크는 크게, 준비물 링크는 작게 — 창작자가 도안을 팔고 있다면
     // Knotty가 그 판매를 가로채는 게 아니라 이어 주는 쪽이어야 한다.
     function renderShopLinks(links) {
       const box = document.getElementById("shop-links");
       box.innerHTML = "";
-      if (!links || (!links.pattern && !links.supply)) {
+      if (!links || (!links.pattern && !links.supply && !links.search)) {
         box.classList.add("hidden");
         return;
       }
@@ -536,23 +581,30 @@
         box.appendChild(a);
       });
 
-      const supply = links.supply || [];
-      if (supply.length) {
+      // 창작자가 직접 건 링크와, 우리가 만든 검색 링크를 **절대 섞지 않는다.**
+      // 섞으면 우리 추측이 원작자 공식 판매처처럼 보인다.
+      const chips = (items, heading, extraTitle) => {
+        if (!items || !items.length) return;
         const wrap = document.createElement("div");
         wrap.className = "flex flex-wrap gap-2 items-center";
-        wrap.innerHTML = `<span class="text-xs text-slate-400 shrink-0">🧶 원작자 준비물 링크</span>`;
-        supply.forEach(item => {
+        wrap.innerHTML = `<span class="text-xs text-slate-400 shrink-0">${heading}</span>`;
+        items.forEach(item => {
           const a = document.createElement("a");
           a.href = item.url;
           a.target = "_blank";
           a.rel = "noopener noreferrer";
+          if (extraTitle) a.title = extraTitle;
           a.className = "pdf-clickable-link text-xs bg-white border border-slate-300 "
                       + "hover:border-amber-500 hover:text-amber-700 text-slate-600 px-3 py-1.5 rounded-lg transition";
           a.innerText = item.label;
           wrap.appendChild(a);
         });
         box.appendChild(wrap);
-      }
+      };
+
+      chips(links.supply, "🧶 원작자 준비물 링크");
+      chips(links.search, "🔎 실 검색",
+            "원작자가 링크를 남기지 않아 실 이름으로 검색해 드려요. 공식 판매처가 아닙니다.");
     }
 
     function escapeHtml(s) {
@@ -637,7 +689,21 @@
 
       // 2. 준비물
       if (!data.materials) data.materials = {};
-      data.materials.yarn = document.getElementById("mat-yarn").innerText.trim();
+      // 실은 이제 객체 배열이다. 화면에는 "이름 색상, 이름 색상"으로만 보이므로,
+      // 사용자가 고친 이름을 되쓰되 **굵기·게이지·출처는 건드리지 않는다.**
+      // 실 개수가 달라졌으면 구조를 지키기 어려우니 그때만 이름 하나로 접는다.
+      const yarnText = document.getElementById("mat-yarn").innerText.trim();
+      const yarnList = Array.isArray(data.materials.yarn) ? data.materials.yarn : null;
+      if (!yarnList) {
+        data.materials.yarn = yarnText;                       // 예전 형태(문자열)는 그대로
+      } else {
+        const parts = yarnText.split(",").map(s => s.trim()).filter(Boolean);
+        if (parts.length === yarnList.length) {
+          parts.forEach((p, i) => { yarnList[i].name = p; yarnList[i].color = null; });
+        } else if (parts.length) {
+          data.materials.yarn = [{ ...yarnList[0], name: yarnText, color: null }];
+        }
+      }
 
       // "코바늘 (3/0호(2.3mm))" → { type, size }  ※ size 안에 괄호가 또 있으므로 마지막 ')' 기준
       const needleText = document.getElementById("mat-needle").innerText.trim();
