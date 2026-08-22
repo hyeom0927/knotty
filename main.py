@@ -202,6 +202,21 @@ print(
 print(f"🌐 허용 출처 — {', '.join(ALLOWED_ORIGINS) or '(없음)'}")
 
 
+def refund_rate_limit(ip: str) -> None:
+    """AI를 부르지 못하고 끝난 요청의 카운트를 돌려준다.
+
+    한도는 Gemini 비용을 막으려고 두는 것이므로, **AI가 돌지 않았으면 세지 않는다.**
+    자막이 없는 영상을 몇 번 시도했다는 이유로 한 시간 잠기는 것은 벌을 잘못 주는 것이다.
+
+    직전에 넣은 기록 하나를 빼는 방식이라, 요청이 겹치면 남의 기록을 뺄 수 있다.
+    한도를 조금 느슨하게 만드는 쪽의 오차이고 비용은 전역 상한이 막으므로 감수한다.
+    """
+    for bucket in (f"ip:{ip}:hour", f"ip:{ip}:day", "global:day"):
+        events = _rate_events.get(bucket)
+        if events:
+            events.pop()
+
+
 def reject_foreign_origin(request: Request) -> None:
     """다른 사이트에서 온 브라우저 요청을 막는다.
 
@@ -847,8 +862,31 @@ def _row_can_change_stitch_count(text: str) -> bool:
     return False
 
 
+_GROUPED_ROW = re.compile(r"\d+\s*[~\-–]\s*\d+|반복|repeat", re.IGNORECASE)
+
+
+def _is_grouped_row(step: dict) -> bool:
+    """여러 단을 한 줄로 묶은 스텝인가. (`11~13단`, `메리야스뜨기 반복`)"""
+    text = f"{step.get('step_name') or ''} {step.get('row_range') or ''}"
+    return bool(_GROUPED_ROW.search(text))
+
+
 def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
-    """단별 formula를 파싱해 total_stitches와 대조. 불일치 건수 반환"""
+    """단별 formula를 파싱해 total_stitches와 대조. 불일치 건수 반환
+
+    **경고는 확실할 때만 낸다.** 틀린 경고가 섞이면 맞는 경고까지 무시당하기 때문이다.
+    그래서 두 가지는 일부러 검사하지 않는다.
+
+    ① 앞 단의 코를 **적게** 쓰는 단
+       많이 쓰는 것은 확실한 오류다 — 앞 단에 없는 코를 뜰 수는 없다.
+       그러나 적게 쓰는 것은 정상일 수 있다. 지갑 덮개, 주머니, 트임처럼
+       앞 단의 일부에만 뜨는 편물이 실제로 있다. (토마토 지갑 덮개: 앞 단 48코에 sc 20)
+
+    ② 여러 단을 한 줄로 묶었는데 코수가 배수로 나오는 단
+       `k 110, p 110` / 총 110코는 겉면·안면 **두 단**을 한 줄로 적은 것이지
+       한 단에서 220코를 뜬 것이 아니다. 계산값이 적힌 코수의 정확한 배수라면
+       줄 하나에 여러 단이 들어 있다고 보고 검사하지 않는다.
+    """
     if not isinstance(steps, list):
         return 0
 
@@ -886,16 +924,21 @@ def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
         elif ack:
             # 사람이 이미 확인한 단. 검증은 돌리되 경고로 세지 않는다.
             step["validation"] = {"status": "acknowledged"}
+        elif (_is_grouped_row(step) and parsed and expected
+              and parsed % expected == 0 and parsed // expected >= 2):
+            # ② 한 줄에 여러 단이 들어 있다 — 이 줄만으로는 판단할 수 없다
+            step["validation"] = {"status": "skipped", "reason": "grouped_row"}
         elif parsed != expected or (prev_total and consumed is not None
-                                    and consumed > 0 and consumed != prev_total):
+                                    and consumed > prev_total):
             # 생산(남는 코)과 소비(앞 단에서 쓰는 코)를 함께 보면
             # 약어가 틀렸는지 총 코수가 틀렸는지 구분할 수 있다.
+            # ① 소비는 **초과일 때만** 오류로 본다 (부분 편물이 정상적으로 존재하므로)
             uses_wrong = (prev_total and consumed is not None
-                          and consumed > 0 and consumed != prev_total)
+                          and consumed > prev_total)
             if parsed != expected and uses_wrong:
                 reason = "formula_stitches"   # 둘 다 어긋남 → 약어에 코가 더/덜 들어감
             elif uses_wrong:
-                reason = "formula_uses"       # 남는 코는 맞는데 앞 단과 안 맞음
+                reason = "formula_uses"       # 남는 코는 맞는데 앞 단보다 많이 씀
             else:
                 reason = "total_stitches"     # 약어는 앞 단과 맞는데 총 코수가 다름
 
@@ -907,8 +950,14 @@ def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
             step["validation"] = info
             mismatch_count += 1
         elif (prev_total and prev_total != expected
-              and not _row_can_change_stitch_count(formula)):
-            # 늘림·줄임이 없는데 앞 단과 코수가 달라진 경우
+              and not _row_can_change_stitch_count(formula)
+              and not (consumed is not None and consumed < prev_total)):
+            # 늘림·줄임이 없는데 앞 단과 코수가 달라진 경우.
+            #
+            # 단, 앞 단의 코를 다 쓰지 않았다면 코수가 줄어드는 것이 당연하다.
+            # (지갑 덮개: 앞 단 48코 중 20코에만 뜨므로 20코가 되는 것이 정상)
+            # 이 조건을 빼면 부분 편물이 formula_uses 대신 continuity로 옮겨와
+            # 똑같이 틀린 경고를 낸다.
             step["validation"] = {
                 "status": "mismatch", "reason": "continuity",
                 "expected": expected, "previous": prev_total
@@ -1269,7 +1318,16 @@ def get_youtube_data_sync(url: str, video_id: str):
     channel_url = f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
 
     # 2. Supadata API 호출 (Render 유튜브 IP 차단 우회)
+    #
+    # 실패 원인을 반드시 구분해서 남긴다. 예전에는 어떤 이유로 실패하든 자막이 빈 채로
+    # 흘러가서 사용자에게 "이 영상은 자막이 없어요"라고만 알렸는데, 자동 자막이 멀쩡히
+    # 있는 영상에서도 같은 말이 나왔다. 다시 시도하면 될 일을 안 된다고 말한 셈이다.
+    #   unavailable → 정말 자막이 없음 (다시 해도 소용없음)
+    #   outage      → 수집 경로 장애 (잠시 뒤 다시 하면 됨)
+    #   quota       → 자막 API 사용량 초과
+    #   misconfig   → 키 미설정 (운영자 문제)
     transcript_text = ""
+    transcript_error = None
     supadata_key = os.getenv("SUPADATA_API_KEY", "").strip()
 
     if supadata_key:
@@ -1277,10 +1335,10 @@ def get_youtube_data_sync(url: str, video_id: str):
             encoded_url = urllib.parse.quote(f"https://www.youtube.com/watch?v={video_id}")
             sd_url = f"https://api.supadata.ai/v1/youtube/transcript?url={encoded_url}"
             sd_req = urllib.request.Request(
-                sd_url, 
+                sd_url,
                 headers={"x-api-key": supadata_key}
             )
-            with urllib.request.urlopen(sd_req) as resp:
+            with urllib.request.urlopen(sd_req, timeout=60) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 content = data.get("content", [])
                 if isinstance(content, list):
@@ -1288,13 +1346,32 @@ def get_youtube_data_sync(url: str, video_id: str):
                     transcript_text = "\n".join(lines)
                 elif isinstance(content, str):
                     transcript_text = content
+            if transcript_text:
                 print(f"✅ Supadata 자막 수집 성공! ({len(transcript_text)}자)")
+            else:
+                # 200인데 내용이 비었다 = 이 영상에 자막 트랙이 없다
+                transcript_error = ("unavailable", "Supadata가 빈 자막을 반환")
+                print("⚠️ Supadata 응답은 정상이나 자막 내용이 비어 있습니다.")
         except urllib.error.HTTPError as e:
-            err_msg = e.read().decode('utf-8', errors='ignore')
-            print(f"❌ Supadata HTTP 에러 ({e.code}): {err_msg}")
+            err_msg = e.read().decode('utf-8', errors='ignore')[:200]
+            if e.code == 429:
+                transcript_error = ("quota", f"Supadata 429: {err_msg}")
+            elif e.code >= 500:
+                transcript_error = ("outage", f"Supadata {e.code}: {err_msg}")
+            elif e.code in (401, 403):
+                transcript_error = ("misconfig", f"Supadata {e.code}: 키 거부됨")
+            elif "transcript" in err_msg.lower() or e.code == 404:
+                # 자막이 없는 영상이라고 Supadata가 알려준 경우
+                transcript_error = ("unavailable", f"Supadata {e.code}: {err_msg}")
+            else:
+                transcript_error = ("outage", f"Supadata {e.code}: {err_msg}")
+            print(f"❌ Supadata HTTP 에러 ({e.code}) → {transcript_error[0]}: {err_msg}")
         except Exception as e:
-            print(f"❌ Supadata 호출 예외: {e}")
+            # 타임아웃·DNS·연결 끊김 — 전부 일시적 장애로 본다
+            transcript_error = ("outage", f"{type(e).__name__}: {str(e)[:150]}")
+            print(f"❌ Supadata 호출 예외 → outage: {e}")
     else:
+        transcript_error = ("misconfig", "SUPADATA_API_KEY 미설정")
         print("⚠️ SUPADATA_API_KEY 환경변수가 설정되지 않았습니다.")
 
     # 3. Supadata 미설정/실패 시 Fallback (로컬 전용)
@@ -1311,8 +1388,16 @@ def get_youtube_data_sync(url: str, video_id: str):
             formatted_list = [f"[{int(item['start'])}s] {item['text']}" for item in transcript_list]
             transcript_text = "\n".join(formatted_list)
             print(f"✅ [Fallback] YouTubeTranscriptApi 성공 ({len(transcript_text)}자)")
+            transcript_error = None   # 되살아났으니 앞의 실패는 없던 일로 한다
         except Exception as e:
-            print(f"❌ YouTubeTranscriptApi 실패 (Render IP 차단 또는 자막 없음): {e}")
+            name = type(e).__name__
+            # 라이브러리가 "자막 트랙이 없다"고 명시한 경우만 unavailable로 확정한다.
+            # 나머지(IP 차단·네트워크)는 영상 탓이 아니므로 앞선 판정을 유지한다.
+            if "NoTranscript" in name or "TranscriptsDisabled" in name:
+                transcript_error = ("unavailable", name)
+            elif not transcript_error:
+                transcript_error = ("outage", f"{name}: {str(e)[:150]}")
+            print(f"❌ YouTubeTranscriptApi 실패 → {transcript_error[0]} ({name}): {str(e)[:120]}")
 
     meta_info = {
         "title": title or "유튜브 뜨개질 영상",
@@ -1322,7 +1407,8 @@ def get_youtube_data_sync(url: str, video_id: str):
         "channel_id": channel_id,
         "channel_handle": channel_handle,
         "thumbnail_url": thumbnail_url,
-        "duration_sec": meta.get("duration_sec") or 0
+        "duration_sec": meta.get("duration_sec") or 0,
+        "transcript_error": transcript_error   # (종류, 상세) 또는 None
     }
 
     return meta_info, transcript_text
@@ -1420,6 +1506,7 @@ async def health():
 
 @app.post("/api/generate")
 async def generate_pattern(req: PatternRequest, request: Request):
+    ip = client_ip(request)
     try:
         reject_foreign_origin(request)
         url = req.youtube_url.strip()
@@ -1458,7 +1545,8 @@ async def generate_pattern(req: PatternRequest, request: Request):
 
         # 여기서부터가 돈이 나가는 구간이다(Supadata 1회 + Gemini 2회).
         # 캐시로 끝나는 요청은 비용이 0이므로 한도에서 빼고, 이 지점에서만 센다.
-        check_rate_limit(client_ip(request))
+        # 자막 수집 단계에서 끝나면 Gemini는 돌지 않으므로 아래에서 카운트를 돌려준다.
+        check_rate_limit(ip)
 
         print(f"🔍 [New Request] 분석 시작: {canonical_url}")
 
@@ -1502,8 +1590,30 @@ async def generate_pattern(req: PatternRequest, request: Request):
                   f"(channel_name={meta_info.get('channel_name')!r}). "
                   f"나중에 백필로 채울 수 있습니다.")
 
-        # 💡 자막 수집 실패 시 예외 처리
+        # 💡 자막 수집 실패 — 원인에 따라 다른 안내를 한다.
+        #    "다시 하면 되는 일"과 "다시 해도 안 되는 일"을 구분해 주지 않으면
+        #    사용자는 멀쩡한 영상을 포기하게 된다.
         if not transcript or not transcript.strip():
+            kind, detail = meta_info.get("transcript_error") or ("unavailable", "원인 미상")
+            print(f"🚫 자막 수집 실패 [{kind}] {detail}")
+            # 여기까지 왔으면 Gemini는 한 번도 부르지 않았다. 한도를 돌려준다.
+            refund_rate_limit(ip)
+
+            if kind == "outage":
+                raise HTTPException(
+                    status_code=503,
+                    detail="지금 자막을 가져오는 서버가 불안정해요. 1~2분 뒤에 다시 시도해 주세요."
+                )
+            if kind == "quota":
+                raise HTTPException(
+                    status_code=429,
+                    detail="오늘 자막 수집 사용량을 모두 썼어요. 내일 다시 시도해 주세요."
+                )
+            if kind == "misconfig":
+                raise HTTPException(
+                    status_code=503,
+                    detail="자막 수집 설정에 문제가 있어요. 잠시 후 다시 시도해 주세요. (운영자 확인 필요)"
+                )
             raise HTTPException(
                 status_code=400,
                 detail="이 영상은 자막이 없어 정리할 수 없어요. 자막이 있는 영상으로 다시 시도해 주세요."
@@ -1570,11 +1680,14 @@ async def generate_pattern(req: PatternRequest, request: Request):
             headers={"Retry-After": str(rle.retry_after)}
         )
     except QuotaExceededError as qe:
+        # AI가 응답을 내주지 못했으므로 사용자의 한도를 깎지 않는다
+        refund_rate_limit(ip)
         raise HTTPException(
             status_code=429,
             detail=f"오늘 AI 사용량을 모두 썼어요. 잠시 후 또는 내일 다시 시도해 주세요. (모델: {qe})"
         )
     except ModelOverloadedError as me:
+        refund_rate_limit(ip)
         raise HTTPException(
             status_code=503,
             detail="지금 AI 서버가 몰려서 응답하지 못했어요. 1~2분 뒤에 다시 시도해 주세요."
