@@ -862,8 +862,31 @@ def _row_can_change_stitch_count(text: str) -> bool:
     return False
 
 
+_GROUPED_ROW = re.compile(r"\d+\s*[~\-–]\s*\d+|반복|repeat", re.IGNORECASE)
+
+
+def _is_grouped_row(step: dict) -> bool:
+    """여러 단을 한 줄로 묶은 스텝인가. (`11~13단`, `메리야스뜨기 반복`)"""
+    text = f"{step.get('step_name') or ''} {step.get('row_range') or ''}"
+    return bool(_GROUPED_ROW.search(text))
+
+
 def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
-    """단별 formula를 파싱해 total_stitches와 대조. 불일치 건수 반환"""
+    """단별 formula를 파싱해 total_stitches와 대조. 불일치 건수 반환
+
+    **경고는 확실할 때만 낸다.** 틀린 경고가 섞이면 맞는 경고까지 무시당하기 때문이다.
+    그래서 두 가지는 일부러 검사하지 않는다.
+
+    ① 앞 단의 코를 **적게** 쓰는 단
+       많이 쓰는 것은 확실한 오류다 — 앞 단에 없는 코를 뜰 수는 없다.
+       그러나 적게 쓰는 것은 정상일 수 있다. 지갑 덮개, 주머니, 트임처럼
+       앞 단의 일부에만 뜨는 편물이 실제로 있다. (토마토 지갑 덮개: 앞 단 48코에 sc 20)
+
+    ② 여러 단을 한 줄로 묶었는데 코수가 배수로 나오는 단
+       `k 110, p 110` / 총 110코는 겉면·안면 **두 단**을 한 줄로 적은 것이지
+       한 단에서 220코를 뜬 것이 아니다. 계산값이 적힌 코수의 정확한 배수라면
+       줄 하나에 여러 단이 들어 있다고 보고 검사하지 않는다.
+    """
     if not isinstance(steps, list):
         return 0
 
@@ -901,16 +924,21 @@ def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
         elif ack:
             # 사람이 이미 확인한 단. 검증은 돌리되 경고로 세지 않는다.
             step["validation"] = {"status": "acknowledged"}
+        elif (_is_grouped_row(step) and parsed and expected
+              and parsed % expected == 0 and parsed // expected >= 2):
+            # ② 한 줄에 여러 단이 들어 있다 — 이 줄만으로는 판단할 수 없다
+            step["validation"] = {"status": "skipped", "reason": "grouped_row"}
         elif parsed != expected or (prev_total and consumed is not None
-                                    and consumed > 0 and consumed != prev_total):
+                                    and consumed > prev_total):
             # 생산(남는 코)과 소비(앞 단에서 쓰는 코)를 함께 보면
             # 약어가 틀렸는지 총 코수가 틀렸는지 구분할 수 있다.
+            # ① 소비는 **초과일 때만** 오류로 본다 (부분 편물이 정상적으로 존재하므로)
             uses_wrong = (prev_total and consumed is not None
-                          and consumed > 0 and consumed != prev_total)
+                          and consumed > prev_total)
             if parsed != expected and uses_wrong:
                 reason = "formula_stitches"   # 둘 다 어긋남 → 약어에 코가 더/덜 들어감
             elif uses_wrong:
-                reason = "formula_uses"       # 남는 코는 맞는데 앞 단과 안 맞음
+                reason = "formula_uses"       # 남는 코는 맞는데 앞 단보다 많이 씀
             else:
                 reason = "total_stitches"     # 약어는 앞 단과 맞는데 총 코수가 다름
 
@@ -922,8 +950,14 @@ def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
             step["validation"] = info
             mismatch_count += 1
         elif (prev_total and prev_total != expected
-              and not _row_can_change_stitch_count(formula)):
-            # 늘림·줄임이 없는데 앞 단과 코수가 달라진 경우
+              and not _row_can_change_stitch_count(formula)
+              and not (consumed is not None and consumed < prev_total)):
+            # 늘림·줄임이 없는데 앞 단과 코수가 달라진 경우.
+            #
+            # 단, 앞 단의 코를 다 쓰지 않았다면 코수가 줄어드는 것이 당연하다.
+            # (지갑 덮개: 앞 단 48코 중 20코에만 뜨므로 20코가 되는 것이 정상)
+            # 이 조건을 빼면 부분 편물이 formula_uses 대신 continuity로 옮겨와
+            # 똑같이 틀린 경고를 낸다.
             step["validation"] = {
                 "status": "mismatch", "reason": "continuity",
                 "expected": expected, "previous": prev_total
