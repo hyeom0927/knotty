@@ -248,6 +248,8 @@ class PatternUpdateRequest(BaseModel):
 # ==========================================
 
 _VIDEO_ID = r"[0-9A-Za-z_-]{11}"
+# 유튜브 채널의 불변 ID. `UC` + 22자. 핸들(@name)과 반드시 구분해야 한다.
+_UC_CHANNEL_ID = re.compile(r"UC[0-9A-Za-z_-]{22}")
 
 # 유튜브 주소는 형태가 다양하다. 재생목록·공유 파라미터·shorts·live·모바일·youtu.be 등
 # 어떤 형태로 들어와도 같은 영상이면 같은 ID로 수렴해야 캐시가 새지 않는다.
@@ -1109,6 +1111,74 @@ def extract_shop_links(description: str) -> dict:
     return result
 
 
+# 스마트스토어·아이디어스처럼 여러 판매자가 같이 쓰는 곳은 도메인만으로 가게가 특정되지 않는다.
+# `smartstore.naver.com/mongleinae`처럼 **경로 한 칸까지** 있어야 그 채널의 가게가 된다.
+_MARKETPLACE_HOSTS = ("smartstore.naver.com", "idus.com", "kmong.com",
+                      "etsy.com", "ko-fi.com", "ohou.se")
+# 한 도메인 안에서 판매자마다 방을 따로 쓰는 형태. `sevy.co.kr/minishop/cyber8912`처럼
+# 여기까지 살려야 그 사람의 가게가 된다. 호스트만 남기면 플랫폼 본사 몰로 보내게 된다.
+_SELLER_PATH_PREFIXES = ("minishop", "smartstore", "seller", "brand", "store")
+
+
+def shop_home_url(url: str) -> str:
+    """상품 페이지 주소에서 **그 가게의 대문** 주소를 만든다."""
+    try:
+        parts = urllib.parse.urlparse(url)
+    except ValueError:
+        return ""
+    if not parts.netloc:
+        return ""
+    segments = [s for s in parts.path.split("/") if s]
+
+    if any(h in parts.netloc for h in _MARKETPLACE_HOSTS):
+        if not segments:
+            return ""
+        return f"{parts.scheme}://{parts.netloc}/{segments[0]}"
+
+    # 자체 도메인이라도 판매자별 방이 있으면 거기까지 남긴다
+    if len(segments) >= 2 and segments[0].lower() in _SELLER_PATH_PREFIXES:
+        return f"{parts.scheme}://{parts.netloc}/{segments[0]}/{segments[1]}"
+
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def remember_creator_shop(creator_id: str, creator_record: dict, shop_links: dict) -> dict:
+    """이 영상에서 찾은 판매처를 채널 정보에 기억해 둔다.
+
+    창작자가 링크를 매 영상에 다는 것은 아니다. 실측으로 7건 중 3건은 설명란에 링크가 없었다.
+    그런데 **가게는 채널마다 하나**이므로, 한 번 알아 두면 그 채널의 다른 영상에서도 쓸 수 있다.
+    (앵콜스·바늘이야기처럼 채널 주인이 직접 실을 파는 경우가 뜨개판에는 특히 많다)
+
+    이미 저장돼 있으면 덮어쓰지 않는다 — 나중에 손으로 고친 값을 지우지 않기 위함이다.
+    """
+    if not creator_id or not shop_links:
+        return creator_record
+
+    updates = {}
+    record = creator_record or {}
+    for column, kind in (("shop_url", "supply"), ("pattern_shop_url", "pattern")):
+        if record.get(column):
+            continue
+        for item in shop_links.get(kind) or []:
+            home = shop_home_url(item["url"])
+            if home:
+                updates[column] = home
+                break
+
+    if not updates:
+        return creator_record
+
+    try:
+        res = supabase.table("creators").update(updates).eq("id", creator_id).execute()
+        print(f"🏪 채널 판매처 기억: {updates}")
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        # 이건 있으면 좋은 정보일 뿐이다. 실패해도 도안 생성을 막지 않는다.
+        print(f"⚠️ 채널 판매처 저장 실패(무시): {str(e)[:120]}")
+    return creator_record
+
+
 def build_yarn_search_links(pattern_data: dict, shop_links: dict) -> list:
     """설명란에 구매 링크가 없을 때, 실 이름으로 **검색** 링크를 만든다.
 
@@ -1121,7 +1191,8 @@ def build_yarn_search_links(pattern_data: dict, shop_links: dict) -> list:
 
     설명란에서 뽑은 링크가 이미 있으면 만들지 않는다. 창작자가 직접 건 링크가 언제나 낫다.
     """
-    if shop_links.get("supply") or shop_links.get("pattern"):
+    # 창작자가 직접 건 링크나 채널 쇼핑몰을 아는 경우엔 검색으로 대신하지 않는다.
+    if any(shop_links.get(k) for k in ("supply", "pattern", "channel")):
         return []
 
     materials = (pattern_data or {}).get("materials")
@@ -1471,7 +1542,15 @@ def _fetch_meta_from_supadata(video_id: str) -> dict:
     if channel.get("name"):
         meta["channel_name"] = channel["name"]
     if channel.get("id"):
-        meta["channel_id"] = channel["id"]
+        # Supadata는 여기에 UC아이디 대신 `@핸들`을 넣어 주기도 한다.
+        # 그대로 channel_id로 받으면 `youtube.com/channel/@handle`이라는
+        # **존재하지 않는 주소**가 만들어지고, 같은 채널이 두 번 저장된다.
+        # (실제로 바늘이야기가 UC주소와 @주소로 두 행이 생겼다)
+        raw_id = str(channel["id"]).strip()
+        if _UC_CHANNEL_ID.fullmatch(raw_id):
+            meta["channel_id"] = raw_id
+        elif raw_id.startswith("@"):
+            meta["channel_handle"] = raw_id
     return meta
 
 
@@ -1543,7 +1622,14 @@ def get_youtube_data_sync(url: str, video_id: str):
 
     # 채널 주소는 항상 불변 ID로 만든다. 같은 채널이 핸들 주소와 ID 주소로
     # 두 번 저장되는 것을 구조적으로 막기 위함이다.
-    channel_url = f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
+    # 핸들은 `/channel/` 경로에 넣으면 안 된다 — 열리지 않는 주소가 되고,
+    # channel_url이 중복 방지 키라서 같은 채널이 두 번 저장된다.
+    if channel_id and _UC_CHANNEL_ID.fullmatch(channel_id):
+        channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    elif channel_handle:
+        channel_url = f"https://www.youtube.com/{channel_handle.lstrip('/')}"
+    else:
+        channel_url = ""
 
     # 2. Supadata API 호출 (Render 유튜브 IP 차단 우회)
     #
@@ -1872,6 +1958,16 @@ async def generate_pattern(req: PatternRequest, request: Request):
         pattern_data = graft_pass1_timestamps(pattern_data, intermediate_json_str)
         # 원작자에게 트래픽을 되돌려 주는 링크. AI가 지어낼 수 없도록 설명란에서 직접 뽑는다.
         shop_links = extract_shop_links(meta_info.get("description") or "")
+        creator_record = remember_creator_shop(creator_id, creator_record, shop_links)
+
+        # 이 영상에 링크가 없어도, 같은 채널의 다른 영상에서 알아 둔 가게가 있으면 안내한다.
+        channel_shop = (creator_record or {}).get("shop_url")
+        if channel_shop and not shop_links.get("supply"):
+            shop_links["channel"] = [{
+                "url": channel_shop,
+                "label": f"{meta_info.get('channel_name') or '이 채널'} 쇼핑몰",
+            }]
+
         search = build_yarn_search_links(pattern_data, shop_links)
         if search:
             shop_links["search"] = search

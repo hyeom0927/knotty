@@ -563,7 +563,7 @@
     function renderShopLinks(links) {
       const box = document.getElementById("shop-links");
       box.innerHTML = "";
-      if (!links || (!links.pattern && !links.supply && !links.search)) {
+      if (!links || !["pattern", "supply", "channel", "search"].some(k => links[k]?.length)) {
         box.classList.add("hidden");
         return;
       }
@@ -603,6 +603,8 @@
       };
 
       chips(links.supply, "🧶 원작자 준비물 링크");
+      chips(links.channel, "🏪 채널 쇼핑몰",
+            "이 채널의 다른 영상에서 확인한 원작자 운영 쇼핑몰이에요.");
       chips(links.search, "🔎 실 검색",
             "원작자가 링크를 남기지 않아 실 이름으로 검색해 드려요. 공식 판매처가 아닙니다.");
     }
