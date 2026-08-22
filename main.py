@@ -1005,6 +1005,110 @@ def validate_stitch_counts(pattern_data: dict, catalog: list = None) -> dict:
     return pattern_data
 
 
+# ------------------------------------------
+# 설명란에서 구매 링크 뽑기
+# ------------------------------------------
+# 원작자에게 트래픽을 되돌려 주는 장치다. (docs/POSITIONING.md 원칙 ③)
+# 특히 **도안 판매 링크**가 중요하다. 창작자가 서술형 도안을 따로 팔고 있다면
+# Knotty가 그 판매를 잠식하지 않고 오히려 연결해 주는 쪽이 되어야 한다.
+#
+# 분류의 근거는 도메인이 아니라 **창작자가 링크 옆에 직접 쓴 말**이다.
+# 실제 설명란이 그렇게 생겼다:
+#   "메리노프린트 실 구매 링크 : https://banul.co.kr/..."
+#   "🎁 구매하기 👉 https://sevy.co.kr/product/..."
+#   "메리노프린트 1볼 + 도안 + 동영상 패키지로 한번에 구매하기: https://..."
+
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+')
+
+# 구매와 무관한 링크. 여기 걸리면 도메인만 보고 바로 버린다.
+_LINK_SKIP = (
+    "instagram.com", "blog.naver.com", "cafe.naver.com", "facebook.com",
+    "twitter.com", "x.com", "tiktok.com", "threads.net", "pinterest.",
+    "youtube.com", "youtu.be", "forms.gle", "docs.google.com", "open.kakao.com",
+    "pf.kakao.com", "discord.gg", "t.me", "band.us", "brunch.co.kr",
+)
+
+# 링크 옆 문구로 판별한다. 도안이 실보다 먼저다 —
+# "실 1볼 + 도안 패키지"는 도안을 살 수 있는 경로이므로 도안 쪽이 맞다.
+_PATTERN_WORDS = ("도안", "패턴", "pattern", "서술형", "이북", "e북", "ebook", "pdf")
+_SUPPLY_WORDS = ("실", "원사", "yarn", "재료", "준비물", "키트", "kit", "바늘",
+                 "볼", "부자재", "단추", "솜", "고리")
+_BUY_WORDS = ("구매", "구입", "주문", "판매", "buy", "order", "shop", "store",
+              "스토어", "쇼핑", "몰")
+
+# 사는 곳이 아니라 읽는 곳. 문구에 이런 말이 섞이면 구매 링크가 아니다.
+# (실제 사례: "※ 이 외 도안판매 및 도안의 무단 복제, 배포, 게재 및…" → 저작권 공지 페이지)
+_LINK_DENY_WORDS = ("무단", "복제", "배포", "금지", "저작권", "공지", "약관",
+                    "환불", "교환", "안내사항", "유의", "불가")
+_DENY_URL_HINTS = ("/article/", "/board", "notice", "/faq", "/terms", "/policy")
+
+# 문구가 전혀 없을 때의 마지막 근거. 주소 모양이 쇼핑몰이면 구매처로 본다.
+_SHOP_URL_HINTS = ("smartstore.naver.com", "naver.me", "idus.com", "kmong.com",
+                   "coupang.com", "etsy.com", "ravelry.com", "ko-fi.com",
+                   ".store/", "/shop", "/product", "shopdetail", "/minishop",
+                   "/goods", "ohou.se")
+
+
+def _link_label(description: str, url: str) -> str:
+    """링크 앞에 창작자가 써 둔 설명 문구를 찾는다.
+
+    같은 줄이 우선이고, 줄에 주소밖에 없으면 바로 윗줄을 본다.
+    (`https://habil.store/shop/?idx=109`처럼 주소만 덩그러니 있는 설명란이 실제로 있다)
+    """
+    lines = description.splitlines()
+    for i, line in enumerate(lines):
+        if url not in line:
+            continue
+        label = line.replace(url, " ")
+        label = re.sub(r"[\s:：|>▶👉🎁💌✍🏼·\-–—=~*#]+", " ", label).strip()
+        if len(label) < 2 and i > 0:
+            label = re.sub(r"[\s:：|>▶👉🎁💌·\-–—=~*#]+", " ", lines[i - 1]).strip()
+        return label[:60]
+    return ""
+
+
+def extract_shop_links(description: str) -> dict:
+    """설명란에서 도안·준비물 구매 링크를 뽑는다. 확실한 것만 남긴다.
+
+    잘못된 링크를 크게 걸어 두면 사용자를 엉뚱한 곳으로 보내고 창작자에게도 실례다.
+    근거가 없으면 넣지 않는다.
+    """
+    if not description:
+        return {}
+
+    found, seen = {"pattern": [], "supply": []}, set()
+
+    for raw in _URL_RE.findall(description):
+        url = raw.rstrip(".,;)】」]")
+        low = url.lower()
+        if any(bad in low for bad in _LINK_SKIP) or url in seen:
+            continue
+
+        label = _link_label(description, raw)
+        low_label = label.lower()
+
+        if (any(w in low_label for w in _LINK_DENY_WORDS)
+                or any(h in low for h in _DENY_URL_HINTS)):
+            continue                 # 공지·약관 페이지 — 구매 링크가 아니다
+
+        if any(w in low_label for w in _PATTERN_WORDS):
+            kind = "pattern"
+        elif any(w in low_label for w in _SUPPLY_WORDS):
+            kind = "supply"
+        elif any(w in low_label for w in _BUY_WORDS) or any(h in low for h in _SHOP_URL_HINTS):
+            kind = "supply"          # 구매처인 건 분명하나 무엇을 파는지는 모른다
+        else:
+            continue                 # 근거 없음 — 넣지 않는다
+
+        seen.add(url)
+        found[kind].append({"url": url, "label": label or "구매하기"})
+
+    result = {k: v for k, v in found.items() if v}
+    if result:
+        print(f"🛒 구매 링크 — 도안 {len(found['pattern'])}개 / 준비물 {len(found['supply'])}개")
+    return result
+
+
 def _ts_key(text) -> str:
     """단 이름을 대조용으로 정규화한다. ('11 ~ 13단' → '11~13단')"""
     return re.sub(r"\s+", "", str(text or "")).lower()
@@ -1192,17 +1296,31 @@ def _fetch_meta_from_page(video_id: str) -> dict:
     with urllib.request.urlopen(req, timeout=20) as response:
         html = response.read().decode('utf-8', errors='ignore')
 
-    unescape = lambda s: re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), s)
+    def json_field(key: str):
+        """워치 페이지의 JSON에서 문자열 필드 하나를 꺼낸다.
 
-    desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
-    if desc_match:
-        meta["description"] = unescape(desc_match.group(1).replace(r'\n', '\n'))
-    title_match = re.search(r'"title":"([^"]*)"', html)
-    if title_match:
-        meta["title"] = unescape(title_match.group(1))
-    channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
-    if channel_match:
-        meta["channel_name"] = unescape(channel_match.group(1))
+        `"([^"]*)"`로 잡으면 **값 안의 이스케이프된 따옴표에서 잘린다.**
+        실제로 설명란이 통째로 날아갔다 — 「다막아 액막이」는 1042자 중 892자를 잃었고,
+        구매 링크는 대개 설명란 아래쪽에 있어 함께 사라졌다.
+        그래서 `\\"`를 건너뛰도록 잡고, 해석은 json에 맡긴다(\\n·\\u·\\/ 전부 처리된다).
+        """
+        m = re.search(rf'"{key}":"((?:[^"\\]|\\.)*)"', html)
+        if not m:
+            return None
+        try:
+            return json.loads(f'"{m.group(1)}"')
+        except json.JSONDecodeError:
+            return None
+
+    description = json_field("shortDescription")
+    if description:
+        meta["description"] = description
+    title = json_field("title")
+    if title:
+        meta["title"] = title
+    channel_name = json_field("ownerChannelName")
+    if channel_name:
+        meta["channel_name"] = channel_name
     length_match = re.search(r'"lengthSeconds":"(\d+)"', html)
     if length_match:
         meta["duration_sec"] = int(length_match.group(1))
@@ -1641,6 +1759,10 @@ async def generate_pattern(req: PatternRequest, request: Request):
         pattern_data = normalize_needle_type(pattern_data)
         # 시각의 출처는 자막뿐이고 자막을 보는 건 Pass 1뿐이다. Pass 2가 흘렸으면 여기서 되살린다.
         pattern_data = graft_pass1_timestamps(pattern_data, intermediate_json_str)
+        # 원작자에게 트래픽을 되돌려 주는 링크. AI가 지어낼 수 없도록 설명란에서 직접 뽑는다.
+        shop_links = extract_shop_links(meta_info.get("description") or "")
+        if shop_links:
+            pattern_data["shop_links"] = shop_links
         pattern_data = validate_timestamps(pattern_data, meta_info.get("duration_sec") or 0)
         pattern_data = validate_stitch_counts(pattern_data, catalog)
         db_title = pattern_data.get("pattern_title") or meta_info["title"]
@@ -1730,6 +1852,17 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Re
     reject_foreign_origin(request)
     try:
         sanitized_data = sanitize_pattern_data(req.pattern_data)
+
+        # 구매 링크는 사용자가 고치는 값이 아니라 **서버가 설명란에서 뽑은 값**이다.
+        # pattern_data가 브라우저를 왕복하므로, 그대로 두면 인증 없는 이 PUT으로
+        # "정식 도안 구매하기" 버튼의 주소를 아무 데로나 바꿔치기할 수 있다.
+        # 저장된 값을 언제나 우선한다.
+        stored = supabase.table("patterns").select("pattern_data").eq("id", pattern_id).execute()
+        previous = (stored.data[0].get("pattern_data") if stored.data else None) or {}
+        if isinstance(previous, dict) and previous.get("shop_links"):
+            sanitized_data["shop_links"] = previous["shop_links"]
+        else:
+            sanitized_data.pop("shop_links", None)
         sanitized_data = normalize_needle_type(sanitized_data)
         sanitized_data = validate_timestamps(sanitized_data, 0)
         # 사용자가 코수를 고쳤을 수 있으므로 저장 시점에 다시 검증한다
