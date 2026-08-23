@@ -427,7 +427,7 @@
 
       // 준비물 정보
       const mat = data.materials || {};
-      renderYarn(mat.yarn);
+      renderYarn(mat.yarn, data.shop_links);
       
       const needle = mat.needle || {};
       const needleText = typeof needle === 'object' ? `${needle.type || ''} (${needle.size || '미기재'})` : needle;
@@ -613,32 +613,69 @@
     // 굵기·게이지는 `source`가 inferred면 "추정"을 붙인다.
     // 게이지가 틀리면 완성 크기가 통째로 달라지므로, 우리가 추론한 값을
     // 영상에서 들은 값인 것처럼 보여주면 안 된다.
-    function renderYarn(yarn) {
+    function renderYarn(yarn, shopLinks) {
       const nameEl = document.getElementById("mat-yarn");
       const detailEl = document.getElementById("mat-yarn-detail");
       detailEl.innerHTML = "";
 
+      // 실 이름 자체를 눌러서 검색으로 넘어가게 한다. 준비물 밖에 따로 줄을 만들면
+      // 정작 실을 보고 있는 자리에서 한 번 더 눈을 옮겨야 한다.
+      // 검색 링크는 원작자가 링크를 안 남겼을 때만 서버가 만들어 준다.
+      const search = (shopLinks || {}).search || [];
+      const linkFor = (text) => {
+        const hit = search.find(s => text && text.includes(s.label));
+        if (!hit) return escapeHtml(text);
+        return `<a href="${escapeHtml(hit.url)}" target="_blank" rel="noopener noreferrer"
+                   class="pdf-clickable-link underline decoration-dotted decoration-slate-300
+                          underline-offset-2 hover:text-amber-700 transition"
+                   title="'${escapeHtml(hit.label)}' 검색해 보기 (원작자 공식 판매처가 아니에요)"
+                >${escapeHtml(text)}</a>`;
+      };
+
       if (!yarn) { nameEl.innerText = "미기재"; return; }
-      if (typeof yarn === "string") { nameEl.innerText = yarn; return; }
+      if (typeof yarn === "string") { nameEl.innerHTML = linkFor(yarn); return; }
 
       const items = Array.isArray(yarn) ? yarn : [yarn];
       const names = items.map(y => [y.name, y.color].filter(Boolean).join(" ")).filter(Boolean);
-      nameEl.innerText = names.join(", ") || "미기재";
+      nameEl.innerHTML = names.length ? names.map(linkFor).join(", ") : "미기재";
 
       items.forEach(y => {
-        // 이름·색은 위에 이미 나왔다. 여기서는 굵기·양·게이지만 덧붙인다.
-        const bits = [];
-        if (y.weight) bits.push(`굵기 ${y.weight}`);
-        if (y.amount) bits.push(y.amount);
-        if (y.gauge) bits.push(`게이지 ${y.gauge}`);
-        if (!bits.length) return;
+        // ① 영상에서 말한 것 — 이름·색은 위에 이미 나왔으므로 굵기·양·게이지만
+        const said = [];
+        if (y.weight) said.push(`굵기 ${y.weight}`);
+        if (y.amount) said.push(y.amount);
+        if (y.gauge) said.push(`게이지 ${y.gauge}`);
 
-        const est = y.source === "inferred"
-          ? ` <span class="text-amber-600" title="영상에서 직접 말한 값이 아니라 실 이름 등에서 추론한 값이에요. 실제와 다를 수 있습니다.">(추정)</span>`
-          : "";
+        if (said.length) {
+          const est = y.source === "inferred"
+            ? ` <span class="text-amber-600" title="영상에서 직접 말한 값이 아니라 실 이름 등에서 추론한 값이에요.">(추정)</span>`
+            : "";
+          const row = document.createElement("p");
+          row.className = "text-[11px] text-slate-500 font-normal leading-snug";
+          row.innerHTML = `${items.length > 1 ? escapeHtml(y.name) + " · " : ""}${escapeHtml(said.join(" · "))}${est}`;
+          detailEl.appendChild(row);
+        }
+
+        // ② 실 사전에서 찾은 것 — **라벨 기준이지 이 도안의 게이지가 아니다.**
+        // 같은 실이라도 도안마다 게이지가 다르므로(메리노프린트: 라벨 20코, 도안 22코)
+        // 줄을 나누고 "실 라벨 기준"이라고 못 박는다.
+        const spec = y.spec || {};
+        const label = [];
+        if (spec.gauge_label) label.push(`게이지 ${spec.gauge_label}`);
+        if (spec.needle_size) label.push(`권장 바늘 ${spec.needle_size}`);
+        if (spec.ball_weight || spec.ball_length) {
+          label.push(`1볼 ${[spec.ball_weight, spec.ball_length].filter(Boolean).join(" / ")}`);
+        }
+        if (!label.length) return;
+
         const row = document.createElement("p");
-        row.className = "text-[11px] text-slate-500 font-normal leading-snug";
-        row.innerHTML = `${items.length > 1 ? escapeHtml(y.name) + " · " : ""}${escapeHtml(bits.join(" · "))}${est}`;
+        row.className = "text-[11px] text-slate-400 font-normal leading-snug";
+        const src = spec.source_url
+          ? ` <a href="${escapeHtml(spec.source_url)}" target="_blank" rel="noopener noreferrer"
+                 class="underline decoration-dotted hover:text-amber-700">출처</a>`
+          : "";
+        row.innerHTML = `<span class="text-slate-500">실 라벨 기준</span> · `
+                      + `${escapeHtml(label.join(" · "))}${src}`;
         detailEl.appendChild(row);
       });
 
@@ -646,7 +683,7 @@
       if (!items.some(y => y.gauge)) {
         const note = document.createElement("p");
         note.className = "text-[11px] text-slate-400 font-normal leading-snug";
-        note.innerText = "게이지는 영상에 언급되지 않았어요. 완성 크기가 다를 수 있습니다.";
+        note.innerText = "게이지는 영상에 언급되지 않았어요.";
         detailEl.appendChild(note);
       }
     }
@@ -657,7 +694,7 @@
     function renderShopLinks(links) {
       const box = document.getElementById("shop-links");
       box.innerHTML = "";
-      if (!links || !["pattern", "supply", "channel", "search"].some(k => links[k]?.length)) {
+      if (!links || !["pattern", "supply", "channel"].some(k => links[k]?.length)) {
         box.classList.add("hidden");
         return;
       }
@@ -699,8 +736,8 @@
       chips(links.supply, "🧶 원작자 준비물 링크");
       chips(links.channel, "🏪 채널 쇼핑몰",
             "이 채널의 다른 영상에서 확인한 원작자 운영 쇼핑몰이에요.");
-      chips(links.search, "🔎 실 검색",
-            "원작자가 링크를 남기지 않아 실 이름으로 검색해 드려요. 공식 판매처가 아닙니다.");
+      // 실 검색은 별도 줄로 두지 않는다. '사용 실'의 실 이름 자체가 링크다(renderYarn).
+      // 사용자가 실을 보고 있는 그 자리에서 바로 넘어가는 편이 자연스럽다.
     }
 
     function escapeHtml(s) {
