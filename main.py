@@ -243,11 +243,18 @@ class PatternRequest(BaseModel):
 class PatternUpdateRequest(BaseModel):
     pattern_data: dict
 
+class ReportRequest(BaseModel):
+    pattern_id: str
+    message: str
+    step_ref: str = ""
+
 # ==========================================
 # 3. 유틸리티, 텍스트 전처리 및 AI 추출 함수
 # ==========================================
 
 _VIDEO_ID = r"[0-9A-Za-z_-]{11}"
+# 유튜브 채널의 불변 ID. `UC` + 22자. 핸들(@name)과 반드시 구분해야 한다.
+_UC_CHANNEL_ID = re.compile(r"UC[0-9A-Za-z_-]{22}")
 
 # 유튜브 주소는 형태가 다양하다. 재생목록·공유 파라미터·shorts·live·모바일·youtu.be 등
 # 어떤 형태로 들어와도 같은 영상이면 같은 ID로 수렴해야 캐시가 새지 않는다.
@@ -1005,6 +1012,224 @@ def validate_stitch_counts(pattern_data: dict, catalog: list = None) -> dict:
     return pattern_data
 
 
+# ------------------------------------------
+# 설명란에서 구매 링크 뽑기
+# ------------------------------------------
+# 원작자에게 트래픽을 되돌려 주는 장치다. (docs/POSITIONING.md 원칙 ③)
+# 특히 **도안 판매 링크**가 중요하다. 창작자가 서술형 도안을 따로 팔고 있다면
+# Knotty가 그 판매를 잠식하지 않고 오히려 연결해 주는 쪽이 되어야 한다.
+#
+# 분류의 근거는 도메인이 아니라 **창작자가 링크 옆에 직접 쓴 말**이다.
+# 실제 설명란이 그렇게 생겼다:
+#   "메리노프린트 실 구매 링크 : https://banul.co.kr/..."
+#   "🎁 구매하기 👉 https://sevy.co.kr/product/..."
+#   "메리노프린트 1볼 + 도안 + 동영상 패키지로 한번에 구매하기: https://..."
+
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+')
+
+# 구매와 무관한 링크. 여기 걸리면 도메인만 보고 바로 버린다.
+_LINK_SKIP = (
+    "instagram.com", "blog.naver.com", "cafe.naver.com", "facebook.com",
+    "twitter.com", "x.com", "tiktok.com", "threads.net", "pinterest.",
+    "youtube.com", "youtu.be", "forms.gle", "docs.google.com", "open.kakao.com",
+    "pf.kakao.com", "discord.gg", "t.me", "band.us", "brunch.co.kr",
+)
+
+# 링크 옆 문구로 판별한다. 도안이 실보다 먼저다 —
+# "실 1볼 + 도안 패키지"는 도안을 살 수 있는 경로이므로 도안 쪽이 맞다.
+_PATTERN_WORDS = ("도안", "패턴", "pattern", "서술형", "이북", "e북", "ebook", "pdf")
+_SUPPLY_WORDS = ("실", "원사", "yarn", "재료", "준비물", "키트", "kit", "바늘",
+                 "볼", "부자재", "단추", "솜", "고리")
+_BUY_WORDS = ("구매", "구입", "주문", "판매", "buy", "order", "shop", "store",
+              "스토어", "쇼핑", "몰")
+
+# 사는 곳이 아니라 읽는 곳. 문구에 이런 말이 섞이면 구매 링크가 아니다.
+# (실제 사례: "※ 이 외 도안판매 및 도안의 무단 복제, 배포, 게재 및…" → 저작권 공지 페이지)
+_LINK_DENY_WORDS = ("무단", "복제", "배포", "금지", "저작권", "공지", "약관",
+                    "환불", "교환", "안내사항", "유의", "불가")
+_DENY_URL_HINTS = ("/article/", "/board", "notice", "/faq", "/terms", "/policy")
+
+# 문구가 전혀 없을 때의 마지막 근거. 주소 모양이 쇼핑몰이면 구매처로 본다.
+_SHOP_URL_HINTS = ("smartstore.naver.com", "naver.me", "idus.com", "kmong.com",
+                   "coupang.com", "etsy.com", "ravelry.com", "ko-fi.com",
+                   ".store/", "/shop", "/product", "shopdetail", "/minishop",
+                   "/goods", "ohou.se")
+
+
+def _link_label(description: str, url: str) -> str:
+    """링크 앞에 창작자가 써 둔 설명 문구를 찾는다.
+
+    같은 줄이 우선이고, 줄에 주소밖에 없으면 바로 윗줄을 본다.
+    (`https://habil.store/shop/?idx=109`처럼 주소만 덩그러니 있는 설명란이 실제로 있다)
+    """
+    lines = description.splitlines()
+    for i, line in enumerate(lines):
+        if url not in line:
+            continue
+        label = line.replace(url, " ")
+        label = re.sub(r"[\s:：|>▶👉🎁💌✍🏼·\-–—=~*#]+", " ", label).strip()
+        if len(label) < 2 and i > 0:
+            label = re.sub(r"[\s:：|>▶👉🎁💌·\-–—=~*#]+", " ", lines[i - 1]).strip()
+        return label[:60]
+    return ""
+
+
+def extract_shop_links(description: str) -> dict:
+    """설명란에서 도안·준비물 구매 링크를 뽑는다. 확실한 것만 남긴다.
+
+    잘못된 링크를 크게 걸어 두면 사용자를 엉뚱한 곳으로 보내고 창작자에게도 실례다.
+    근거가 없으면 넣지 않는다.
+    """
+    if not description:
+        return {}
+
+    found, seen = {"pattern": [], "supply": []}, set()
+
+    for raw in _URL_RE.findall(description):
+        url = raw.rstrip(".,;)】」]")
+        low = url.lower()
+        if any(bad in low for bad in _LINK_SKIP) or url in seen:
+            continue
+
+        label = _link_label(description, raw)
+        low_label = label.lower()
+
+        if (any(w in low_label for w in _LINK_DENY_WORDS)
+                or any(h in low for h in _DENY_URL_HINTS)):
+            continue                 # 공지·약관 페이지 — 구매 링크가 아니다
+
+        if any(w in low_label for w in _PATTERN_WORDS):
+            kind = "pattern"
+        elif any(w in low_label for w in _SUPPLY_WORDS):
+            kind = "supply"
+        elif any(w in low_label for w in _BUY_WORDS) or any(h in low for h in _SHOP_URL_HINTS):
+            kind = "supply"          # 구매처인 건 분명하나 무엇을 파는지는 모른다
+        else:
+            continue                 # 근거 없음 — 넣지 않는다
+
+        seen.add(url)
+        found[kind].append({"url": url, "label": label or "구매하기"})
+
+    result = {k: v for k, v in found.items() if v}
+    if result:
+        print(f"🛒 구매 링크 — 도안 {len(found['pattern'])}개 / 준비물 {len(found['supply'])}개")
+    return result
+
+
+# 스마트스토어·아이디어스처럼 여러 판매자가 같이 쓰는 곳은 도메인만으로 가게가 특정되지 않는다.
+# `smartstore.naver.com/mongleinae`처럼 **경로 한 칸까지** 있어야 그 채널의 가게가 된다.
+_MARKETPLACE_HOSTS = ("smartstore.naver.com", "idus.com", "kmong.com",
+                      "etsy.com", "ko-fi.com", "ohou.se")
+# 한 도메인 안에서 판매자마다 방을 따로 쓰는 형태. `sevy.co.kr/minishop/cyber8912`처럼
+# 여기까지 살려야 그 사람의 가게가 된다. 호스트만 남기면 플랫폼 본사 몰로 보내게 된다.
+_SELLER_PATH_PREFIXES = ("minishop", "smartstore", "seller", "brand", "store")
+
+
+def shop_home_url(url: str) -> str:
+    """상품 페이지 주소에서 **그 가게의 대문** 주소를 만든다."""
+    try:
+        parts = urllib.parse.urlparse(url)
+    except ValueError:
+        return ""
+    if not parts.netloc:
+        return ""
+    segments = [s for s in parts.path.split("/") if s]
+
+    if any(h in parts.netloc for h in _MARKETPLACE_HOSTS):
+        if not segments:
+            return ""
+        return f"{parts.scheme}://{parts.netloc}/{segments[0]}"
+
+    # 자체 도메인이라도 판매자별 방이 있으면 거기까지 남긴다
+    if len(segments) >= 2 and segments[0].lower() in _SELLER_PATH_PREFIXES:
+        return f"{parts.scheme}://{parts.netloc}/{segments[0]}/{segments[1]}"
+
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def remember_creator_shop(creator_id: str, creator_record: dict, shop_links: dict) -> dict:
+    """이 영상에서 찾은 판매처를 채널 정보에 기억해 둔다.
+
+    창작자가 링크를 매 영상에 다는 것은 아니다. 실측으로 7건 중 3건은 설명란에 링크가 없었다.
+    그런데 **가게는 채널마다 하나**이므로, 한 번 알아 두면 그 채널의 다른 영상에서도 쓸 수 있다.
+    (앵콜스·바늘이야기처럼 채널 주인이 직접 실을 파는 경우가 뜨개판에는 특히 많다)
+
+    이미 저장돼 있으면 덮어쓰지 않는다 — 나중에 손으로 고친 값을 지우지 않기 위함이다.
+    """
+    if not creator_id or not shop_links:
+        return creator_record
+
+    updates = {}
+    record = creator_record or {}
+    for column, kind in (("shop_url", "supply"), ("pattern_shop_url", "pattern")):
+        if record.get(column):
+            continue
+        for item in shop_links.get(kind) or []:
+            home = shop_home_url(item["url"])
+            if home:
+                updates[column] = home
+                break
+
+    if not updates:
+        return creator_record
+
+    try:
+        res = supabase.table("creators").update(updates).eq("id", creator_id).execute()
+        print(f"🏪 채널 판매처 기억: {updates}")
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        # 이건 있으면 좋은 정보일 뿐이다. 실패해도 도안 생성을 막지 않는다.
+        print(f"⚠️ 채널 판매처 저장 실패(무시): {str(e)[:120]}")
+    return creator_record
+
+
+def build_yarn_search_links(pattern_data: dict, shop_links: dict) -> list:
+    """설명란에 구매 링크가 없을 때, 실 이름으로 **검색** 링크를 만든다.
+
+    창작자가 링크를 안 걸어 둔 영상이 실제로 절반이 넘는다(7건 중 3건).
+    그렇다고 없는 주소를 지어낼 수는 없으므로, 확실히 존재하는 검색 결과로 보낸다.
+
+    **"구매하기"가 아니라 "검색"이라고 부르는 것이 중요하다.** 이건 우리가 만든 추측이지
+    창작자가 지정한 판매처가 아니다. 둘을 섞으면 엉뚱한 가게를 원작자 공식 링크처럼
+    보이게 만든다.
+
+    설명란에서 뽑은 링크가 이미 있으면 만들지 않는다. 창작자가 직접 건 링크가 언제나 낫다.
+    """
+    # 창작자가 직접 건 링크나 채널 쇼핑몰을 아는 경우엔 검색으로 대신하지 않는다.
+    if any(shop_links.get(k) for k in ("supply", "pattern", "channel")):
+        return []
+
+    materials = (pattern_data or {}).get("materials")
+    if not isinstance(materials, dict):
+        return []
+
+    links, seen = [], set()
+    for yarn in (materials.get("yarn") or []):
+        raw = (yarn.get("name") or "").strip() if isinstance(yarn, dict) else str(yarn).strip()
+        # 괄호 안의 색번호는 검색을 오히려 방해한다. ("오메가 (186번 귤색)" → "오메가")
+        raw = re.sub(r"[（(].*?[)）]", " ", raw)
+
+        # 예전에 저장된 도안은 `"로미오실 (27번), 줄리엣실 (63번)"`처럼 실 두 종이
+        # 한 문자열에 들어 있다. **저장 구조는 그대로 두고 검색어만 쪼갠다** —
+        # 여기서 나눈 결과로 없던 실을 만들어 내면 도안 자체가 틀려진다.
+        for name in re.split(r"[,/·]| 및 ", raw):
+            name = name.strip(" ,·/")
+            # "빨간색 실"처럼 상품명이 아닌 것은 검색해도 소용없다
+            if len(name) < 2 or name in seen or re.fullmatch(r"[가-힣]*색\s*실?", name):
+                continue
+            seen.add(name)
+            query = urllib.parse.quote(f"{name} 뜨개실")
+            links.append({
+                "label": name,
+                "url": f"https://search.shopping.naver.com/search/all?query={query}",
+            })
+
+    if links:
+        print(f"🔎 실 검색 링크 {len(links)}개 생성 (설명란에 구매 링크가 없어 대체)")
+    return links
+
+
 def _ts_key(text) -> str:
     """단 이름을 대조용으로 정규화한다. ('11 ~ 13단' → '11~13단')"""
     return re.sub(r"\s+", "", str(text or "")).lower()
@@ -1142,6 +1367,71 @@ def validate_timestamps(pattern_data: dict, duration_sec: int = 0) -> dict:
     return pattern_data
 
 
+_YARN_FIELDS = ("name", "color", "weight", "amount", "gauge", "source")
+
+
+def normalize_yarn(pattern_data: dict) -> dict:
+    """materials.yarn을 객체 배열로 통일한다.
+
+    세 가지 형태가 모두 들어온다.
+      - 문자열   `"오메가 (186번 귤색)"`          ← 예전에 저장된 도안
+      - 객체     `{...}`                        ← AI가 배열을 깜빡한 경우
+      - 객체 배열 `[{...}, {...}]`               ← 지금의 정상 형태
+
+    **문자열을 쉼표로 쪼개지 않는다.** `"오메가 (186번 귤색)"`처럼 이름 안에 쉼표가
+    들어갈 수 있어서, 쪼개면 없던 실이 생긴다. 통째로 `name`에 담고 그대로 보여준다.
+
+    게이지는 특별히 다룬다. 근거(`source`)가 없는데 게이지만 있으면 **`inferred`로 낮춘다.**
+    게이지가 틀리면 사용자가 완성 크기를 통째로 잘못 잡으므로,
+    확신이 없을 때는 화면에 "추정"이라고 알려 주는 편이 낫다.
+    """
+    if not isinstance(pattern_data, dict):
+        return pattern_data
+
+    materials = pattern_data.get("materials")
+    if not isinstance(materials, dict) or "yarn" not in materials:
+        return pattern_data
+
+    raw = materials.get("yarn")
+    if isinstance(raw, str):
+        items = [{"name": raw.strip(), "source": "video"}] if raw.strip() else []
+    elif isinstance(raw, dict):
+        items = [raw]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        items = []
+
+    cleaned = []
+    for item in items:
+        if isinstance(item, str):
+            item = {"name": item.strip()}
+        if not isinstance(item, dict):
+            continue
+
+        entry = {}
+        for field in _YARN_FIELDS:
+            value = item.get(field)
+            if isinstance(value, str):
+                value = value.strip()
+                # AI가 "모름"을 빈 문자열이나 "없음"으로 적는 경우가 있다. null로 통일한다.
+                if value in ("", "-", "없음", "미기재", "null", "None", "모름"):
+                    value = None
+            entry[field] = value
+
+        if not entry.get("name"):
+            continue
+        if entry.get("source") not in ("video", "inferred"):
+            entry["source"] = "inferred" if entry.get("gauge") or entry.get("weight") else "video"
+        cleaned.append(entry)
+
+    if cleaned:
+        materials["yarn"] = cleaned
+        with_gauge = sum(1 for y in cleaned if y.get("gauge"))
+        print(f"🧵 실 {len(cleaned)}종 정리 — 게이지 있는 실 {with_gauge}종")
+    return pattern_data
+
+
 def normalize_needle_type(pattern_data: dict) -> dict:
     """materials.needle.type을 '코바늘' 또는 '대바늘'로 정규화"""
     if not isinstance(pattern_data, dict):
@@ -1192,17 +1482,31 @@ def _fetch_meta_from_page(video_id: str) -> dict:
     with urllib.request.urlopen(req, timeout=20) as response:
         html = response.read().decode('utf-8', errors='ignore')
 
-    unescape = lambda s: re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), s)
+    def json_field(key: str):
+        """워치 페이지의 JSON에서 문자열 필드 하나를 꺼낸다.
 
-    desc_match = re.search(r'"shortDescription":"([^"]*)"', html)
-    if desc_match:
-        meta["description"] = unescape(desc_match.group(1).replace(r'\n', '\n'))
-    title_match = re.search(r'"title":"([^"]*)"', html)
-    if title_match:
-        meta["title"] = unescape(title_match.group(1))
-    channel_match = re.search(r'"ownerChannelName":"([^"]*)"', html)
-    if channel_match:
-        meta["channel_name"] = unescape(channel_match.group(1))
+        `"([^"]*)"`로 잡으면 **값 안의 이스케이프된 따옴표에서 잘린다.**
+        실제로 설명란이 통째로 날아갔다 — 「다막아 액막이」는 1042자 중 892자를 잃었고,
+        구매 링크는 대개 설명란 아래쪽에 있어 함께 사라졌다.
+        그래서 `\\"`를 건너뛰도록 잡고, 해석은 json에 맡긴다(\\n·\\u·\\/ 전부 처리된다).
+        """
+        m = re.search(rf'"{key}":"((?:[^"\\]|\\.)*)"', html)
+        if not m:
+            return None
+        try:
+            return json.loads(f'"{m.group(1)}"')
+        except json.JSONDecodeError:
+            return None
+
+    description = json_field("shortDescription")
+    if description:
+        meta["description"] = description
+    title = json_field("title")
+    if title:
+        meta["title"] = title
+    channel_name = json_field("ownerChannelName")
+    if channel_name:
+        meta["channel_name"] = channel_name
     length_match = re.search(r'"lengthSeconds":"(\d+)"', html)
     if length_match:
         meta["duration_sec"] = int(length_match.group(1))
@@ -1243,7 +1547,15 @@ def _fetch_meta_from_supadata(video_id: str) -> dict:
     if channel.get("name"):
         meta["channel_name"] = channel["name"]
     if channel.get("id"):
-        meta["channel_id"] = channel["id"]
+        # Supadata는 여기에 UC아이디 대신 `@핸들`을 넣어 주기도 한다.
+        # 그대로 channel_id로 받으면 `youtube.com/channel/@handle`이라는
+        # **존재하지 않는 주소**가 만들어지고, 같은 채널이 두 번 저장된다.
+        # (실제로 바늘이야기가 UC주소와 @주소로 두 행이 생겼다)
+        raw_id = str(channel["id"]).strip()
+        if _UC_CHANNEL_ID.fullmatch(raw_id):
+            meta["channel_id"] = raw_id
+        elif raw_id.startswith("@"):
+            meta["channel_handle"] = raw_id
     return meta
 
 
@@ -1315,7 +1627,14 @@ def get_youtube_data_sync(url: str, video_id: str):
 
     # 채널 주소는 항상 불변 ID로 만든다. 같은 채널이 핸들 주소와 ID 주소로
     # 두 번 저장되는 것을 구조적으로 막기 위함이다.
-    channel_url = f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
+    # 핸들은 `/channel/` 경로에 넣으면 안 된다 — 열리지 않는 주소가 되고,
+    # channel_url이 중복 방지 키라서 같은 채널이 두 번 저장된다.
+    if channel_id and _UC_CHANNEL_ID.fullmatch(channel_id):
+        channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    elif channel_handle:
+        channel_url = f"https://www.youtube.com/{channel_handle.lstrip('/')}"
+    else:
+        channel_url = ""
 
     # 2. Supadata API 호출 (Render 유튜브 IP 차단 우회)
     #
@@ -1639,8 +1958,26 @@ async def generate_pattern(req: PatternRequest, request: Request):
 
         pattern_data = sanitize_pattern_data(pattern_data)
         pattern_data = normalize_needle_type(pattern_data)
+        pattern_data = normalize_yarn(pattern_data)
         # 시각의 출처는 자막뿐이고 자막을 보는 건 Pass 1뿐이다. Pass 2가 흘렸으면 여기서 되살린다.
         pattern_data = graft_pass1_timestamps(pattern_data, intermediate_json_str)
+        # 원작자에게 트래픽을 되돌려 주는 링크. AI가 지어낼 수 없도록 설명란에서 직접 뽑는다.
+        shop_links = extract_shop_links(meta_info.get("description") or "")
+        creator_record = remember_creator_shop(creator_id, creator_record, shop_links)
+
+        # 이 영상에 링크가 없어도, 같은 채널의 다른 영상에서 알아 둔 가게가 있으면 안내한다.
+        channel_shop = (creator_record or {}).get("shop_url")
+        if channel_shop and not shop_links.get("supply"):
+            shop_links["channel"] = [{
+                "url": channel_shop,
+                "label": f"{meta_info.get('channel_name') or '이 채널'} 쇼핑몰",
+            }]
+
+        search = build_yarn_search_links(pattern_data, shop_links)
+        if search:
+            shop_links["search"] = search
+        if shop_links:
+            pattern_data["shop_links"] = shop_links
         pattern_data = validate_timestamps(pattern_data, meta_info.get("duration_sec") or 0)
         pattern_data = validate_stitch_counts(pattern_data, catalog)
         db_title = pattern_data.get("pattern_title") or meta_info["title"]
@@ -1700,6 +2037,123 @@ async def generate_pattern(req: PatternRequest, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def bump_view_count(pattern_id: str, current) -> int:
+    """조회수를 1 올린다.
+
+    읽고 더해서 쓰는 방식이라 **동시 요청이 겹치면 몇 건 샐 수 있다.**
+    정확히 세려면 Supabase에 원자적 증가 함수(RPC)를 만들어야 하는데,
+    "요즘 유행하는 도안"을 고르는 데 쓰는 값이라 몇 건의 오차는 순위를 바꾸지 않는다.
+    도안이 수백 건이 되고 순위 다툼이 생기면 그때 RPC로 옮긴다.
+
+    실패해도 조회 자체는 막지 않는다. 조회수는 도안을 보여주는 일보다 덜 중요하다.
+    """
+    count = (current or 0) + 1
+    try:
+        supabase.table("patterns").update({"view_count": count}).eq("id", pattern_id).execute()
+    except Exception as e:
+        print(f"⚠️ 조회수 증가 실패(무시): {str(e)[:100]}")
+        return current or 0
+    return count
+
+
+@app.get("/api/patterns")
+async def list_patterns(sort: str = "recent", page: int = 1, size: int = 12, q: str = ""):
+    """도안 목록. 게시판·인기 도안·검색이 이 하나를 같이 쓴다.
+
+    본문(`pattern_data`)은 통째로 크므로 목록에서는 빼고, 카드에 필요한 것만 돌려준다.
+    """
+    page = max(1, page)
+    size = max(1, min(size, 48))          # 한 번에 너무 많이 퍼가지 못하게 상한을 둔다
+    start = (page - 1) * size
+
+    try:
+        query = supabase.table("patterns").select(
+            "id,title,thumbnail_url,youtube_url,video_id,view_count,created_at,creators(channel_name,channel_url)",
+            count="exact",
+        )
+        # 숨김 처리된 도안은 목록에 내보내지 않는다 (창작자 요청 시 사용)
+        query = query.or_("is_hidden.is.null,is_hidden.eq.false")
+
+        if q.strip():
+            # 작품명으로 찾는다. 채널명 검색은 조인 대상이라 여기서 걸 수 없어
+            # 아래에서 받아온 결과로 한 번 더 거른다.
+            query = query.ilike("title", f"%{q.strip()}%")
+
+        if sort == "popular":
+            query = query.order("view_count", desc=True).order("created_at", desc=True)
+        else:
+            query = query.order("created_at", desc=True)
+
+        res = query.range(start, start + size - 1).execute()
+        items = res.data or []
+
+        for item in items:
+            creator = item.pop("creators", None) or {}
+            item["channel_name"] = creator.get("channel_name")
+            item["channel_url"] = creator.get("channel_url")
+
+        return {
+            "status": "success",
+            "items": items,
+            "page": page,
+            "size": size,
+            "total": res.count if res.count is not None else len(items),
+            "sort": sort,
+        }
+    except Exception as e:
+        print(f"❌ Error in GET /api/patterns: {str(e)}")
+        raise HTTPException(status_code=500, detail="목록을 불러오지 못했어요.")
+
+
+@app.get("/api/craft-terms")
+async def list_craft_terms():
+    """용어사전. 기법 표를 그대로 보여준다.
+
+    도안이 이미 이 표를 기준으로 만들어지므로, 사전 화면은 같은 데이터를 다르게 보여주는 것뿐이다.
+    """
+    catalog = get_craft_terms_catalog()
+    terms = [
+        {
+            "standard_code": t.get("standard_code"),
+            "kr_name": t.get("kr_name"),
+            "craft_type": t.get("craft_type"),
+            "entry_type": t.get("entry_type"),
+            "description": t.get("description"),
+            "video_url": t.get("video_url"),
+            "thumbnail_url": t.get("thumbnail_url"),
+            "stitch_delta": t.get("stitch_delta"),
+        }
+        for t in catalog
+    ]
+    terms.sort(key=lambda t: (t.get("craft_type") or "", t.get("entry_type") or "", t.get("standard_code") or ""))
+    return {"status": "success", "items": terms, "total": len(terms)}
+
+
+@app.post("/api/reports")
+async def create_report(req: ReportRequest, request: Request):
+    """"이 도안 이상해요" 신고.
+
+    도안 수십 건 규모에서는 별도 에러 트래킹 도구가 필요 없다. 표 하나면 충분하다.
+    """
+    reject_foreign_origin(request)
+    message = (req.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="어떤 점이 이상한지 알려 주세요.")
+
+    try:
+        supabase.table("reports").insert({
+            "pattern_id": req.pattern_id,
+            "message": message[:1000],
+            "step_ref": (req.step_ref or "").strip()[:100] or None,
+        }).execute()
+    except Exception as e:
+        print(f"❌ Error in POST /api/reports: {str(e)}")
+        raise HTTPException(status_code=500, detail="신고를 저장하지 못했어요. 잠시 후 다시 시도해 주세요.")
+
+    print(f"🚨 신고 접수 — pattern={req.pattern_id} step={req.step_ref!r}")
+    return {"status": "success"}
+
+
 @app.get("/api/pattern/{pattern_id}")
 async def get_pattern_by_id(pattern_id: str):
     try:
@@ -1710,6 +2164,7 @@ async def get_pattern_by_id(pattern_id: str):
         record = res.data[0]
         pattern_data = record.get("pattern_data", {})
         record["craft_terms"] = get_matching_craft_terms(pattern_data)
+        record["view_count"] = bump_view_count(pattern_id, record.get("view_count"))
 
         return {
             "status": "success",
@@ -1730,7 +2185,19 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Re
     reject_foreign_origin(request)
     try:
         sanitized_data = sanitize_pattern_data(req.pattern_data)
+
+        # 구매 링크는 사용자가 고치는 값이 아니라 **서버가 설명란에서 뽑은 값**이다.
+        # pattern_data가 브라우저를 왕복하므로, 그대로 두면 인증 없는 이 PUT으로
+        # "정식 도안 구매하기" 버튼의 주소를 아무 데로나 바꿔치기할 수 있다.
+        # 저장된 값을 언제나 우선한다.
+        stored = supabase.table("patterns").select("pattern_data").eq("id", pattern_id).execute()
+        previous = (stored.data[0].get("pattern_data") if stored.data else None) or {}
+        if isinstance(previous, dict) and previous.get("shop_links"):
+            sanitized_data["shop_links"] = previous["shop_links"]
+        else:
+            sanitized_data.pop("shop_links", None)
         sanitized_data = normalize_needle_type(sanitized_data)
+        sanitized_data = normalize_yarn(sanitized_data)
         sanitized_data = validate_timestamps(sanitized_data, 0)
         # 사용자가 코수를 고쳤을 수 있으므로 저장 시점에 다시 검증한다
         sanitized_data = validate_stitch_counts(sanitized_data, get_craft_terms_catalog())

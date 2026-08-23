@@ -38,7 +38,11 @@
         <span class="text-2xl">🧶</span>
         <h1 class="text-xl font-bold bg-gradient-to-r from-amber-600 to-rose-600 bg-clip-text text-transparent">Knotty</h1>
       </div>
-      <span class="text-xs bg-amber-100 text-amber-800 font-medium px-2.5 py-1 rounded-full">MVP Prototype</span>
+      <nav class="flex items-center gap-1 text-xs font-semibold">
+        <button onclick="showHome()" class="px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition">영상 정리</button>
+        <button onclick="showBrowse()" class="px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition">둘러보기</button>
+        <button onclick="showGlossary()" class="px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition">용어사전</button>
+      </nav>
     </div>
   </header>
 
@@ -56,6 +60,59 @@
           <span>영상 정리하기</span>
         </button>
       </div>
+    </section>
+
+    <!-- 최근 본 정리. 로그인 없이 localStorage에 pattern_id만 쌓는다. -->
+    <section id="recent-section" class="hidden bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-bold text-slate-900">🕘 최근 본 정리</h2>
+        <button onclick="clearRecent()" class="text-xs text-slate-400 hover:text-slate-600 transition">기록 지우기</button>
+      </div>
+      <div id="recent-list" class="flex flex-wrap gap-2"></div>
+    </section>
+
+    <!-- 둘러보기 (게시판) -->
+    <section id="browse-section" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-lg font-bold text-slate-900">둘러보기</h2>
+        <div class="flex items-center gap-1 text-xs font-semibold">
+          <button id="sort-recent" onclick="setBrowseSort('recent')" class="px-3 py-1.5 rounded-lg transition">최신순</button>
+          <button id="sort-popular" onclick="setBrowseSort('popular')" class="px-3 py-1.5 rounded-lg transition">인기순</button>
+        </div>
+      </div>
+      <input type="text" id="browse-search" placeholder="작품명으로 검색"
+             class="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm">
+      <div id="browse-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+      <div class="flex items-center justify-between pt-1">
+        <button id="browse-prev" onclick="changeBrowsePage(-1)" class="text-xs font-semibold text-slate-600 hover:text-amber-700 disabled:opacity-30 disabled:cursor-not-allowed transition">← 이전</button>
+        <span id="browse-count" class="text-xs text-slate-400"></span>
+        <button id="browse-next" onclick="changeBrowsePage(1)" class="text-xs font-semibold text-slate-600 hover:text-amber-700 disabled:opacity-30 disabled:cursor-not-allowed transition">다음 →</button>
+      </div>
+    </section>
+
+    <!-- 용어사전 -->
+    <section id="glossary-section" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+      <div>
+        <h2 class="text-lg font-bold text-slate-900">뜨개 용어사전</h2>
+        <p class="text-xs text-slate-500 mt-1">Knotty가 도안을 정리할 때 쓰는 기법 사전 그대로입니다.</p>
+      </div>
+      <input type="text" id="glossary-search" placeholder="약어나 한국어 이름으로 검색 (예: sc, 짧은뜨기)"
+             class="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold text-xs">
+            <tr>
+              <th class="py-2 px-3 w-14 text-center">기호</th>
+              <th class="py-2 px-3 w-28">약어</th>
+              <th class="py-2 px-3 w-40">한국어</th>
+              <th class="py-2 px-3">설명</th>
+              <th class="py-2 px-3 w-14 text-center">영상</th>
+            </tr>
+          </thead>
+          <tbody id="glossary-list" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+      <p id="glossary-count" class="text-xs text-slate-400"></p>
     </section>
 
     <div id="loading" class="hidden bg-white p-12 rounded-2xl shadow-sm border border-slate-200 text-center space-y-4">
@@ -77,6 +134,9 @@
         <div class="flex items-center space-x-2 shrink-0">
           <button onclick="copyShareUrl()" class="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition">
             🔗 링크 복사
+          </button>
+          <button onclick="copyCommentText()" class="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition">
+            💬 댓글용 텍스트
           </button>
           <button onclick="downloadPNG()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition">
             🖼️ PNG 저장
@@ -124,6 +184,10 @@
           단수 옆의 시간을 누르면 그 부분부터 영상이 재생됩니다.
         </p>
 
+        <!-- 원작자의 판매 링크. 설명란에 있을 때만 나타난다.
+             도안을 따로 파는 창작자에게 Knotty가 손해가 아니라 유입 경로가 되게 하는 장치다. -->
+        <div id="shop-links" class="hidden space-y-2 page-break-avoid"></div>
+
         <div class="bg-slate-50 p-5 rounded-xl space-y-4 page-break-avoid">
           <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
             <span>🧺</span> 준비물 (Materials)
@@ -132,6 +196,7 @@
             <div class="bg-white p-3 rounded-lg border border-slate-200">
               <span class="text-slate-400 block mb-1">사용 실</span>
               <p id="mat-yarn" class="font-semibold text-slate-800 editable">-</p>
+              <div id="mat-yarn-detail" class="mt-2 space-y-1.5"></div>
             </div>
             <div class="bg-white p-3 rounded-lg border border-slate-200">
               <span class="text-slate-400 block mb-1">바늘 스펙</span>
@@ -195,7 +260,17 @@
 
         <div class="pt-4 border-t border-slate-100 flex justify-between items-center text-[10px] text-slate-400 page-break-avoid">
           <span id="card-credit">정리: Knotty 🧶</span>
-          <span id="card-date">2026.08.19</span>
+          <span class="flex items-center gap-3">
+            <span id="card-views" class="hidden"></span>
+            <span id="card-date">2026.08.19</span>
+          </span>
+        </div>
+
+        <!-- 신고. 도안 수십 건 규모에서는 표 하나면 충분하다. -->
+        <div class="text-center pt-1">
+          <button onclick="reportPattern()" class="text-[11px] text-slate-400 hover:text-rose-600 transition">
+            🚨 이 정리 이상해요
+          </button>
         </div>
 
       </article>
@@ -222,10 +297,27 @@
     }
 
     window.addEventListener("DOMContentLoaded", async () => {
+      // 검색은 입력이 멈춘 뒤에 보낸다. 글자마다 부르면 서버를 두들기게 된다.
+      let browseTimer, glossaryTimer;
+      document.getElementById("browse-search").addEventListener("input", () => {
+        clearTimeout(browseTimer);
+        browseTimer = setTimeout(() => { browsePage = 1; loadBrowse(); }, 300);
+      });
+      document.getElementById("glossary-search").addEventListener("input", () => {
+        clearTimeout(glossaryTimer);
+        glossaryTimer = setTimeout(renderGlossary, 150);   // 이미 받아둔 목록이라 즉시 거른다
+      });
+
       const urlParams = new URLSearchParams(window.location.search);
       const patternId = urlParams.get("id");
       if (patternId) {
         await loadPatternById(patternId);
+      } else if (urlParams.get("view") === "browse") {
+        showBrowse();
+      } else if (urlParams.get("view") === "glossary") {
+        showGlossary();
+      } else {
+        renderRecent();
       }
     });
 
@@ -251,6 +343,7 @@
         
         history.pushState(null, "", `?id=${currentPatternId}`);
         renderPatternCard(result);
+        rememberRecent(currentPatternId, (result.data || {}).pattern_title);
 
       } catch (err) {
         alert("에러: " + err.message);
@@ -272,7 +365,10 @@
         currentPatternData = record.pattern_data;
         currentRootMeta = record;
 
+        document.getElementById("browse-section").classList.add("hidden");
+        document.getElementById("glossary-section").classList.add("hidden");
         renderPatternCard(record);
+        rememberRecent(record.id, record.title || (record.pattern_data || {}).pattern_title);
       } catch (err) {
         alert("에러: " + err.message);
       } finally {
@@ -310,6 +406,14 @@
       document.getElementById("card-credit").innerText =
         creator.channel_name ? `원작자: ${channelName} · 정리: Knotty 🧶` : "정리: Knotty 🧶";
 
+      renderShopLinks(data.shop_links);
+
+      // 조회수는 저장된 도안을 열었을 때만 의미가 있다 (방금 만든 것은 항상 1)
+      const viewsEl = document.getElementById("card-views");
+      const views = rootMeta.view_count;
+      viewsEl.classList.toggle("hidden", !views);
+      if (views) viewsEl.innerText = `👁 ${views}`;
+
       // 3. 썸네일 링크 바인딩
       document.getElementById("card-youtube-link").href = mainYoutubeUrl;
       const thumbUrl = rootMeta.thumbnail_url || data.thumbnail_url || (data.metadata && data.metadata.thumbnail_url) || "";
@@ -323,7 +427,7 @@
 
       // 준비물 정보
       const mat = data.materials || {};
-      document.getElementById("mat-yarn").innerText = mat.yarn || "미기재";
+      renderYarn(mat.yarn);
       
       const needle = mat.needle || {};
       const needleText = typeof needle === 'object' ? `${needle.type || ''} (${needle.size || '미기재'})` : needle;
@@ -503,6 +607,107 @@
       return `도안 약어대로 세면 ${v.parsed}코인데 ${v.expected}코로 적혀 있어요. 확인이 필요합니다.`;
     }
 
+    // 실 정보를 그린다. 예전 도안은 문자열 하나뿐이라 세 형태를 모두 받는다.
+    //   "오메가 (186번 귤색)"  /  {...}  /  [{...}, {...}]
+    //
+    // 굵기·게이지는 `source`가 inferred면 "추정"을 붙인다.
+    // 게이지가 틀리면 완성 크기가 통째로 달라지므로, 우리가 추론한 값을
+    // 영상에서 들은 값인 것처럼 보여주면 안 된다.
+    function renderYarn(yarn) {
+      const nameEl = document.getElementById("mat-yarn");
+      const detailEl = document.getElementById("mat-yarn-detail");
+      detailEl.innerHTML = "";
+
+      if (!yarn) { nameEl.innerText = "미기재"; return; }
+      if (typeof yarn === "string") { nameEl.innerText = yarn; return; }
+
+      const items = Array.isArray(yarn) ? yarn : [yarn];
+      const names = items.map(y => [y.name, y.color].filter(Boolean).join(" ")).filter(Boolean);
+      nameEl.innerText = names.join(", ") || "미기재";
+
+      items.forEach(y => {
+        // 이름·색은 위에 이미 나왔다. 여기서는 굵기·양·게이지만 덧붙인다.
+        const bits = [];
+        if (y.weight) bits.push(`굵기 ${y.weight}`);
+        if (y.amount) bits.push(y.amount);
+        if (y.gauge) bits.push(`게이지 ${y.gauge}`);
+        if (!bits.length) return;
+
+        const est = y.source === "inferred"
+          ? ` <span class="text-amber-600" title="영상에서 직접 말한 값이 아니라 실 이름 등에서 추론한 값이에요. 실제와 다를 수 있습니다.">(추정)</span>`
+          : "";
+        const row = document.createElement("p");
+        row.className = "text-[11px] text-slate-500 font-normal leading-snug";
+        row.innerHTML = `${items.length > 1 ? escapeHtml(y.name) + " · " : ""}${escapeHtml(bits.join(" · "))}${est}`;
+        detailEl.appendChild(row);
+      });
+
+      // 게이지가 하나도 없으면 알려 준다. 없는 걸 지어내는 것보다 없다고 말하는 편이 낫다.
+      if (!items.some(y => y.gauge)) {
+        const note = document.createElement("p");
+        note.className = "text-[11px] text-slate-400 font-normal leading-snug";
+        note.innerText = "게이지는 영상에 언급되지 않았어요. 완성 크기가 다를 수 있습니다.";
+        detailEl.appendChild(note);
+      }
+    }
+
+    // 원작자의 판매 링크를 그린다.
+    // 도안 링크는 크게, 준비물 링크는 작게 — 창작자가 도안을 팔고 있다면
+    // Knotty가 그 판매를 가로채는 게 아니라 이어 주는 쪽이어야 한다.
+    function renderShopLinks(links) {
+      const box = document.getElementById("shop-links");
+      box.innerHTML = "";
+      if (!links || !["pattern", "supply", "channel", "search"].some(k => links[k]?.length)) {
+        box.classList.add("hidden");
+        return;
+      }
+      box.classList.remove("hidden");
+
+      (links.pattern || []).forEach(item => {
+        const a = document.createElement("a");
+        a.href = item.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.className = "pdf-clickable-link w-full bg-amber-600 hover:bg-amber-700 text-white "
+                    + "font-bold text-sm px-4 py-3 rounded-xl transition gap-2";
+        a.innerHTML = `📘 <span>정식 도안 구매하기</span>
+                       <span class="font-normal text-amber-100 text-xs">${escapeHtml(item.label)}</span>`;
+        box.appendChild(a);
+      });
+
+      // 창작자가 직접 건 링크와, 우리가 만든 검색 링크를 **절대 섞지 않는다.**
+      // 섞으면 우리 추측이 원작자 공식 판매처처럼 보인다.
+      const chips = (items, heading, extraTitle) => {
+        if (!items || !items.length) return;
+        const wrap = document.createElement("div");
+        wrap.className = "flex flex-wrap gap-2 items-center";
+        wrap.innerHTML = `<span class="text-xs text-slate-400 shrink-0">${heading}</span>`;
+        items.forEach(item => {
+          const a = document.createElement("a");
+          a.href = item.url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          if (extraTitle) a.title = extraTitle;
+          a.className = "pdf-clickable-link text-xs bg-white border border-slate-300 "
+                      + "hover:border-amber-500 hover:text-amber-700 text-slate-600 px-3 py-1.5 rounded-lg transition";
+          a.innerText = item.label;
+          wrap.appendChild(a);
+        });
+        box.appendChild(wrap);
+      };
+
+      chips(links.supply, "🧶 원작자 준비물 링크");
+      chips(links.channel, "🏪 채널 쇼핑몰",
+            "이 채널의 다른 영상에서 확인한 원작자 운영 쇼핑몰이에요.");
+      chips(links.search, "🔎 실 검색",
+            "원작자가 링크를 남기지 않아 실 이름으로 검색해 드려요. 공식 판매처가 아닙니다.");
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g,
+        c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
     function appendStepRow(container, step, partIdx, stepIdx) {
       const tr = document.createElement("tr");
 
@@ -580,7 +785,21 @@
 
       // 2. 준비물
       if (!data.materials) data.materials = {};
-      data.materials.yarn = document.getElementById("mat-yarn").innerText.trim();
+      // 실은 이제 객체 배열이다. 화면에는 "이름 색상, 이름 색상"으로만 보이므로,
+      // 사용자가 고친 이름을 되쓰되 **굵기·게이지·출처는 건드리지 않는다.**
+      // 실 개수가 달라졌으면 구조를 지키기 어려우니 그때만 이름 하나로 접는다.
+      const yarnText = document.getElementById("mat-yarn").innerText.trim();
+      const yarnList = Array.isArray(data.materials.yarn) ? data.materials.yarn : null;
+      if (!yarnList) {
+        data.materials.yarn = yarnText;                       // 예전 형태(문자열)는 그대로
+      } else {
+        const parts = yarnText.split(",").map(s => s.trim()).filter(Boolean);
+        if (parts.length === yarnList.length) {
+          parts.forEach((p, i) => { yarnList[i].name = p; yarnList[i].color = null; });
+        } else if (parts.length) {
+          data.materials.yarn = [{ ...yarnList[0], name: yarnText, color: null }];
+        }
+      }
 
       // "코바늘 (3/0호(2.3mm))" → { type, size }  ※ size 안에 괄호가 또 있으므로 마지막 ')' 기준
       const needleText = document.getElementById("mat-needle").innerText.trim();
@@ -732,9 +951,297 @@
       alert("공유 링크가 클립보드에 복사되었습니다!");
     }
 
+    // 유튜브 댓글에 붙여넣을 수 있는 한 줄 포맷으로 만든다.
+    //
+    // 유튜브 댓글은 표를 못 쓰지만, `1:24` 같은 시각은 자동으로 재생 링크가 된다.
+    // 그래서 각 줄 앞에 시각을 두면 **댓글 자체가 그 영상의 목차**가 된다.
+    // 원작자에게도 도움이 되고, Knotty에게는 가장 저렴한 유입 경로다.
+    function buildCommentText() {
+      const data = currentPatternData || {};
+      const title = (currentRootMeta?.title || data.pattern_title || "뜨개 영상 정리").trim();
+      const lines = [`${title} — 단별 정리 🧶`, ""];
+
+      const groups = (data.parts && data.parts.length)
+        ? data.parts.map(p => [p.part_name, p.steps || []])
+        : [[null, data.pattern_steps || []]];
+
+      groups.forEach(([partName, steps]) => {
+        if (!steps.length) return;
+        if (partName) lines.push(`[${partName}]`);
+        steps.forEach(step => {
+          const t = Number((step.timestamps || {}).start) || 0;
+          // 시각이 없는 단은 시간 칸을 비워 자리를 맞춘다 (댓글에서 줄이 어긋나지 않게)
+          const time = t > 0 ? formatTime(t) : "     ";
+          const name = step.step_name || "";
+          const code = prettyCode(step.formula) || (step.instruction || "").slice(0, 40) || "-";
+          const st = (step.total_stitches && step.total_stitches > 0) ? ` (${step.total_stitches}코)` : "";
+          lines.push(`${time}  ${name}  ${code}${st}`);
+        });
+        lines.push("");
+      });
+
+      lines.push("— scripted by Knotty 🧶");
+      lines.push(window.location.href);
+      return lines.join("\n");
+    }
+
+    async function copyCommentText() {
+      if (!currentPatternData) return;
+      const text = buildCommentText();
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (err) {
+        // 클립보드 권한이 없을 때를 대비한 예전 방식
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      // 유튜브 댓글은 10,000자까지만 받는다. 넘으면 잘려서 붙으므로 미리 알린다.
+      const over = text.length > 9500
+        ? `\n\n⚠️ ${text.length}자라 유튜브 댓글(1만 자)에 안 들어갈 수 있어요. 파츠별로 나눠 올려 주세요.`
+        : "";
+      alert(`댓글용 텍스트를 복사했어요! (${text.length}자)\n`
+          + `영상 댓글창에 붙여넣으면 시간이 자동으로 재생 링크가 됩니다.${over}`);
+    }
+
     function showLoading(show) {
       document.getElementById("loading").classList.toggle("hidden", !show);
       if (show) document.getElementById("result-container").classList.add("hidden");
+    }
+
+    // ─────────────────────────────────────────────
+    // 신고
+    // ─────────────────────────────────────────────
+    async function reportPattern() {
+      if (!currentPatternId) return;
+      const message = prompt("어떤 점이 이상한가요?\n(예: 몸판 3단 코수가 맞지 않아요)");
+      if (message === null) return;
+      if (!message.trim()) { alert("내용을 적어 주세요."); return; }
+      try {
+        const res = await fetch(`${API_BASE}/api/reports`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pattern_id: currentPatternId, message: message.trim(), step_ref: "" })
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || "저장 실패");
+        alert("알려주셔서 감사합니다! 확인 후 고치겠습니다.");
+      } catch (err) {
+        alert("신고를 보내지 못했어요: " + err.message);
+      }
+    }
+
+    // ─────────────────────────────────────────────
+    // 최근 본 정리 (로그인 없이 localStorage에 id만 쌓는다)
+    // ─────────────────────────────────────────────
+    const RECENT_KEY = "knotty_recent";
+    const RECENT_MAX = 12;
+
+    function loadRecent() {
+      try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); }
+      catch (e) { return []; }   // 저장값이 깨졌으면 조용히 비운다
+    }
+
+    function rememberRecent(id, title) {
+      if (!id) return;
+      const list = loadRecent().filter(x => x.id !== id);
+      list.unshift({ id, title: title || "제목 없음" });
+      try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch (e) {}
+      renderRecent();
+    }
+
+    function clearRecent() {
+      try { localStorage.removeItem(RECENT_KEY); } catch (e) {}
+      renderRecent();
+    }
+
+    function renderRecent() {
+      const list = loadRecent();
+      const box = document.getElementById("recent-section");
+      const wrap = document.getElementById("recent-list");
+      // 결과를 보고 있을 때는 접어 둔다. 화면을 두 번 채울 이유가 없다.
+      const onResult = !document.getElementById("result-container").classList.contains("hidden");
+      box.classList.toggle("hidden", !list.length || onResult);
+      wrap.innerHTML = "";
+      list.forEach(item => {
+        const a = document.createElement("a");
+        a.href = `?id=${item.id}`;
+        a.className = "text-xs bg-slate-50 border border-slate-200 hover:border-amber-500 "
+                    + "hover:text-amber-700 text-slate-600 px-3 py-1.5 rounded-lg transition";
+        a.innerText = item.title.length > 22 ? item.title.slice(0, 22) + "…" : item.title;
+        wrap.appendChild(a);
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // 화면 전환
+    // ─────────────────────────────────────────────
+    function hideAllSections() {
+      ["browse-section", "glossary-section", "result-container", "loading"]
+        .forEach(id => document.getElementById(id).classList.add("hidden"));
+    }
+
+    function showHome() {
+      hideAllSections();
+      renderRecent();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function showBrowse() {
+      hideAllSections();
+      document.getElementById("browse-section").classList.remove("hidden");
+      document.getElementById("recent-section").classList.add("hidden");
+      loadBrowse();
+    }
+
+    function showGlossary() {
+      hideAllSections();
+      document.getElementById("glossary-section").classList.remove("hidden");
+      document.getElementById("recent-section").classList.add("hidden");
+      loadGlossary();
+    }
+
+    // ─────────────────────────────────────────────
+    // 둘러보기 (게시판)
+    // ─────────────────────────────────────────────
+    let browseSort = "recent";
+    let browsePage = 1;
+    let browseTotal = 0;
+    const BROWSE_SIZE = 12;
+
+    function setBrowseSort(sort) {
+      browseSort = sort;
+      browsePage = 1;
+      loadBrowse();
+    }
+
+    function changeBrowsePage(delta) {
+      browsePage = Math.max(1, browsePage + delta);
+      loadBrowse();
+      document.getElementById("browse-section").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function loadBrowse() {
+      const listEl = document.getElementById("browse-list");
+      const q = document.getElementById("browse-search").value.trim();
+
+      ["recent", "popular"].forEach(s => {
+        document.getElementById(`sort-${s}`).className = s === browseSort
+          ? "px-3 py-1.5 rounded-lg bg-amber-600 text-white transition"
+          : "px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition";
+      });
+
+      listEl.innerHTML = `<p class="text-sm text-slate-400 col-span-full py-6 text-center">불러오는 중…</p>`;
+      try {
+        const params = new URLSearchParams({ sort: browseSort, page: browsePage, size: BROWSE_SIZE });
+        if (q) params.set("q", q);
+        const res = await fetch(`${API_BASE}/api/patterns?${params}`);
+        if (!res.ok) throw new Error("목록을 불러오지 못했어요.");
+        const data = await res.json();
+        browseTotal = data.total || 0;
+        renderBrowse(data.items || []);
+      } catch (err) {
+        listEl.innerHTML = `<p class="text-sm text-rose-500 col-span-full py-6 text-center">${escapeHtml(err.message)}</p>`;
+      }
+    }
+
+    function renderBrowse(items) {
+      const listEl = document.getElementById("browse-list");
+      listEl.innerHTML = "";
+
+      if (!items.length) {
+        listEl.innerHTML = `<p class="text-sm text-slate-400 col-span-full py-6 text-center">아직 정리된 영상이 없어요.</p>`;
+      }
+
+      items.forEach(item => {
+        const a = document.createElement("a");
+        a.href = `?id=${item.id}`;
+        a.className = "block border border-slate-200 rounded-xl overflow-hidden hover:border-amber-500 hover:shadow-sm transition";
+        const views = item.view_count ? `👁 ${item.view_count}` : "";
+        a.innerHTML = `
+          <div class="aspect-video bg-slate-100 overflow-hidden">
+            ${item.thumbnail_url ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" class="w-full h-full object-cover" loading="lazy">` : ""}
+          </div>
+          <div class="p-3 space-y-1">
+            <p class="text-sm font-semibold text-slate-800 leading-snug line-clamp-2">${escapeHtml(item.title || "제목 없음")}</p>
+            <p class="text-xs text-slate-400 flex justify-between gap-2">
+              <span class="truncate">${escapeHtml(item.channel_name || "")}</span>
+              <span class="shrink-0">${views}</span>
+            </p>
+          </div>`;
+        listEl.appendChild(a);
+      });
+
+      const from = (browsePage - 1) * BROWSE_SIZE;
+      document.getElementById("browse-count").innerText =
+        browseTotal ? `${from + 1}–${Math.min(from + items.length, browseTotal)} / 총 ${browseTotal}개` : "";
+      document.getElementById("browse-prev").disabled = browsePage <= 1;
+      document.getElementById("browse-next").disabled = from + items.length >= browseTotal;
+    }
+
+    // ─────────────────────────────────────────────
+    // 용어사전
+    // ─────────────────────────────────────────────
+    let glossaryCache = null;
+
+    async function loadGlossary() {
+      if (!glossaryCache) {
+        document.getElementById("glossary-list").innerHTML =
+          `<tr><td colspan="5" class="py-6 text-center text-sm text-slate-400">불러오는 중…</td></tr>`;
+        try {
+          const res = await fetch(`${API_BASE}/api/craft-terms`);
+          if (!res.ok) throw new Error("용어사전을 불러오지 못했어요.");
+          glossaryCache = (await res.json()).items || [];
+        } catch (err) {
+          document.getElementById("glossary-list").innerHTML =
+            `<tr><td colspan="5" class="py-6 text-center text-sm text-rose-500">${escapeHtml(err.message)}</td></tr>`;
+          return;
+        }
+      }
+      renderGlossary();
+    }
+
+    function renderGlossary() {
+      const q = document.getElementById("glossary-search").value.trim().toLowerCase();
+      const rows = (glossaryCache || []).filter(t =>
+        !q || `${t.standard_code} ${t.kr_name} ${t.description || ""}`.toLowerCase().includes(q));
+
+      const body = document.getElementById("glossary-list");
+      body.innerHTML = "";
+      rows.forEach(t => {
+        const tr = document.createElement("tr");
+        tr.className = "hover:bg-slate-50 transition align-top";
+        const symbol = t.thumbnail_url
+          ? `<img src="${escapeHtml(t.thumbnail_url)}" alt="" class="w-6 h-6 mx-auto object-contain"
+                  onerror="this.style.display='none'">`
+          : `<span class="text-slate-300">-</span>`;
+        const video = t.video_url
+          ? `<a href="${escapeHtml(formatUrl(t.video_url))}" target="_blank" rel="noopener noreferrer"
+                class="text-red-600 hover:text-red-700 transition" title="기법 영상 보기">
+               <svg class="w-5 h-5 fill-current mx-auto" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></a>`
+          : `<span class="text-slate-300">-</span>`;
+        // 대바늘/코바늘, 그리고 formula에 쓰이지 않는 '용어'인지 구분해 준다
+        const tags = [t.craft_type === "knit" ? "대바늘" : "코바늘"];
+        if (t.entry_type !== "stitch") tags.push("용어");
+        tr.innerHTML = `
+          <td class="py-2.5 px-3 text-center">${symbol}</td>
+          <td class="py-2.5 px-3 font-mono font-bold text-amber-700">${escapeHtml(prettyCode(t.standard_code) || "-")}</td>
+          <td class="py-2.5 px-3">
+            <span class="text-slate-800 font-medium">${escapeHtml(t.kr_name || "-")}</span>
+            <span class="block text-[10px] text-slate-400">${tags.join(" · ")}</span>
+          </td>
+          <td class="py-2.5 px-3 text-xs text-slate-500 leading-relaxed">${escapeHtml(t.description || "")}</td>
+          <td class="py-2.5 px-3 text-center">${video}</td>`;
+        body.appendChild(tr);
+      });
+
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-sm text-slate-400">찾는 기법이 없어요.</td></tr>`;
+      }
+      document.getElementById("glossary-count").innerText =
+        `${rows.length}개${q ? ` (전체 ${glossaryCache.length}개 중)` : ""}`;
     }
   </script>
 </body>
