@@ -1367,7 +1367,104 @@ def validate_timestamps(pattern_data: dict, duration_sec: int = 0) -> dict:
     return pattern_data
 
 
-_YARN_FIELDS = ("name", "color", "weight", "amount", "gauge", "source")
+_YARN_FIELDS = ("name", "color", "weight", "amount", "gauge", "source", "spec")
+
+
+_yarn_specs_cache = {"at": 0.0, "items": []}
+
+
+def get_yarn_specs_catalog(force: bool = False) -> list:
+    """실 사전을 읽어 온다(5분 캐싱). 표가 없으면 조용히 빈 목록."""
+    now = time.time()
+    if not force and _yarn_specs_cache["items"] and now - _yarn_specs_cache["at"] < 300:
+        return _yarn_specs_cache["items"]
+    try:
+        res = supabase.table("yarn_specs").select("*").execute()
+        _yarn_specs_cache["items"] = res.data or []
+        _yarn_specs_cache["at"] = now
+    except Exception as e:
+        # 표를 아직 만들지 않았을 수 있다. 이 기능만 꺼지고 도안 생성은 계속된다.
+        print(f"⚠️ yarn_specs 조회 실패(이 기능만 비활성화): {str(e)[:100]}")
+        _yarn_specs_cache["items"] = []
+        _yarn_specs_cache["at"] = now
+    return _yarn_specs_cache["items"]
+
+
+def _yarn_key(name: str) -> str:
+    """실 이름 대조용 키. 표기 흔들림을 걷어낸다.
+
+    `"메리노프린트 1볼"`, `"메리노 프린트"`, `"롤리 코튼"` 이 모두 같은 실을 가리킨다.
+    """
+    text = re.sub(r"[（(].*?[)）]", " ", name or "")
+    text = re.sub(r"\d+\s*(볼|g|그램|호|번|색)", " ", text)
+    text = re.sub(r"[^0-9A-Za-z가-힣]", "", text)
+    return text.replace("실", "").lower()
+
+
+def enrich_yarn_from_specs(pattern_data: dict) -> dict:
+    """실 사전에서 굵기·게이지 같은 정보를 채워 넣는다.
+
+    **영상에는 게이지가 거의 나오지 않는다.** 저장된 7건의 자막(총 13만 자)과 설명란을
+    전수 검사한 결과 게이지 언급이 0건이었다. 그래서 실 이름으로 사전을 찾아 보완한다.
+
+    ⚠️ 사전의 값은 **실 라벨 기준**이지 그 도안의 게이지가 아니다.
+    메리노프린트는 라벨이 20코 × 27단인데 같은 실로 뜬 고양이귀 비니 도안은 22코 × 31단이다.
+    그래서 `gauge`가 아니라 **`gauge_label`** 이라는 다른 자리에 담고,
+    화면에서도 "실 라벨 기준"이라고 구분해 보여준다. 섞으면 사용자가 크기를 잘못 잡는다.
+
+    코바늘 실은 라벨 게이지가 아예 없는 것이 정상이다(롤리코튼 등).
+    그런 실은 권장 바늘 호수와 중량·길이가 대체 실을 고르는 근거가 된다.
+    """
+    if not isinstance(pattern_data, dict):
+        return pattern_data
+    materials = pattern_data.get("materials")
+    if not isinstance(materials, dict) or not isinstance(materials.get("yarn"), list):
+        return pattern_data
+
+    catalog = get_yarn_specs_catalog()
+    if not catalog:
+        return pattern_data
+
+    index = {}
+    for spec in catalog:
+        for label in [spec.get("name")] + list(spec.get("aliases") or []):
+            key = _yarn_key(label)
+            if key:
+                index.setdefault(key, spec)
+
+    matched, unknown = 0, []
+    for yarn in materials["yarn"]:
+        if not isinstance(yarn, dict):
+            continue
+        key = _yarn_key(yarn.get("name"))
+        spec = index.get(key)
+        if not spec:
+            # 부분 일치도 본다. `"메리노프린트1볼"`처럼 붙어 오는 경우가 있다.
+            spec = next((s for k, s in index.items() if k and (k in key or key in k)), None)
+        if not spec:
+            if yarn.get("name"):
+                unknown.append(yarn["name"])
+            continue
+
+        matched += 1
+        yarn["spec"] = {
+            "brand": spec.get("brand"),
+            "weight_class": spec.get("weight_class"),
+            "needle_size": spec.get("needle_size"),
+            "ball_weight": spec.get("ball_weight"),
+            "ball_length": spec.get("ball_length"),
+            "gauge_label": spec.get("gauge_label"),
+            "source_url": spec.get("source_url"),
+        }
+        # 영상이 굵기를 말하지 않았다면 사전 값으로 채운다. 게이지는 채우지 않는다.
+        if not yarn.get("weight") and spec.get("weight_class"):
+            yarn["weight"] = spec["weight_class"]
+
+    if matched:
+        print(f"🧵 실 사전 적용 {matched}종")
+    if unknown:
+        print(f"🧵 사전에 없는 실: {', '.join(unknown[:5])}")
+    return pattern_data
 
 
 def normalize_yarn(pattern_data: dict) -> dict:
@@ -1959,6 +2056,7 @@ async def generate_pattern(req: PatternRequest, request: Request):
         pattern_data = sanitize_pattern_data(pattern_data)
         pattern_data = normalize_needle_type(pattern_data)
         pattern_data = normalize_yarn(pattern_data)
+        pattern_data = enrich_yarn_from_specs(pattern_data)
         # 시각의 출처는 자막뿐이고 자막을 보는 건 Pass 1뿐이다. Pass 2가 흘렸으면 여기서 되살린다.
         pattern_data = graft_pass1_timestamps(pattern_data, intermediate_json_str)
         # 원작자에게 트래픽을 되돌려 주는 링크. AI가 지어낼 수 없도록 설명란에서 직접 뽑는다.
@@ -2198,6 +2296,7 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Re
             sanitized_data.pop("shop_links", None)
         sanitized_data = normalize_needle_type(sanitized_data)
         sanitized_data = normalize_yarn(sanitized_data)
+        sanitized_data = enrich_yarn_from_specs(sanitized_data)
         sanitized_data = validate_timestamps(sanitized_data, 0)
         # 사용자가 코수를 고쳤을 수 있으므로 저장 시점에 다시 검증한다
         sanitized_data = validate_stitch_counts(sanitized_data, get_craft_terms_catalog())
