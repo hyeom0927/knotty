@@ -183,13 +183,6 @@
           </a>
         </div>
 
-        <!-- 이 정리는 영상을 대체하지 않는다는 고지. 원작자와의 관계를 지키는 장치이자
-             사용자에게도 사실이다 — 손동작은 영상에만 있다. (docs/POSITIONING.md 원칙 ②) -->
-        <p class="text-xs text-slate-500 bg-amber-50/60 border border-amber-100 rounded-lg px-3 py-2 page-break-avoid">
-          이 정리는 <strong class="font-semibold text-slate-600">원본 영상과 함께 보도록</strong> 만들어졌어요.
-          단수 옆의 시간을 누르면 그 부분부터 영상이 재생됩니다.
-        </p>
-
         <!-- 원작자의 판매 링크. 설명란에 있을 때만 나타난다.
              도안을 따로 파는 창작자에게 Knotty가 손해가 아니라 유입 경로가 되게 하는 장치다. -->
         <div id="shop-links" class="hidden space-y-2 page-break-avoid"></div>
@@ -240,10 +233,23 @@
             <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
               <span>📋</span> 상세 과정 (Pattern Steps)
             </h3>
-            <span id="validation-notice" class="hidden text-xs text-amber-700 font-medium bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg">
-              ⚠️ 코수 확인이 필요한 단이 <b id="validation-count">0</b>개 있어요
-            </span>
-            <span id="steps-hint" class="text-xs text-slate-400">완료한 단은 체크하여 기록하세요</span>
+            <div class="flex items-center gap-2">
+              <span id="validation-notice" class="hidden text-xs text-amber-700 font-medium bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg">
+                ⚠️ 코수 확인이 필요한 단이 <b id="validation-count">0</b>개 있어요
+              </span>
+              <span id="autofix-notice" class="hidden text-xs text-slate-500 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg"
+                    title="도안 약어와 앞 단 코수가 모두 같은 값을 가리킬 때만 고칩니다. 애매하면 고치지 않고 ⚠️ 로 물어봐요.">
+                🔧 코수를 <b id="autofix-count">0</b>개 단에서 바로잡았어요
+              </span>
+              <span id="steps-hint" class="text-xs text-slate-400">완료한 단은 체크하여 기록하세요</span>
+              <!-- 체크한 단은 이 브라우저에 남아 새로고침해도 유지된다. -->
+              <span id="steps-progress" class="hidden text-xs text-slate-400">
+                <b id="steps-progress-count" class="text-amber-700">0</b>단 체크됨
+                <button type="button" onclick="clearChecked()"
+                        class="no-export ml-1 text-slate-400 hover:text-amber-700 underline"
+                        title="이 정리의 체크를 전부 지웁니다">초기화</button>
+              </span>
+            </div>
           </div>
 
           <div class="border border-slate-200 rounded-xl overflow-hidden">
@@ -368,6 +374,13 @@
         const res = await fetch(`${API_BASE}/api/pattern/${id}`);
         const result = await res.json();
 
+        // 지워진 정리는 목록에서도 지운다. 남겨 두면 누를 때마다 없다는 말만 듣는다.
+        if (res.status === 404) {
+          forgetRecent(id);
+          history.replaceState(null, "", location.pathname);
+          alert("이 정리는 삭제되었어요. 최근 목록에서 지웠습니다.");
+          return;
+        }
         if (!res.ok) throw new Error(result.detail || "정리한 내용을 불러올 수 없습니다.");
 
         const record = result.data;
@@ -526,6 +539,12 @@
 
       // 코수 검증 요약 배너
       const mismatchCount = (data.validation_summary && data.validation_summary.mismatch_count) || 0;
+      const autoFixedCount = (data.validation_summary && data.validation_summary.auto_fixed_count) || 0;
+      const fixNote = document.getElementById("autofix-notice");
+      if (fixNote) {
+        document.getElementById("autofix-count").innerText = autoFixedCount;
+        fixNote.classList.toggle("hidden", autoFixedCount === 0);
+      }
       const notice = document.getElementById("validation-notice");
       const hint = document.getElementById("steps-hint");
       if (mismatchCount > 0) {
@@ -536,6 +555,9 @@
         notice.classList.add("hidden");
         hint.classList.remove("hidden");
       }
+
+      // 체크 요약은 검증 배너보다 뒤에 둔다 — 안내 문구를 켜고 끄는 주체가 겹친다.
+      renderCheckProgress();
 
       document.getElementById("card-date").innerText = new Date().toLocaleDateString();
       document.getElementById("result-container").classList.remove("hidden");
@@ -572,14 +594,72 @@
 
     // ⚠️를 눌러 "확인함"으로 표시. 서버가 재검증해도 유지되도록
     // 그때의 약어·코수를 지문으로 함께 저장한다.
-    async function acknowledgeStep(path) {
+    // 경고가 난 단의 처리 방법을 그 자리에서 고르게 한다.
+    //
+    // 예전에는 ⚠️ 를 누르면 "확인하셨나요?"만 물었다. 그런데 사용자가 하고 싶은 일은
+    // 대개 **틀린 숫자를 고치는 것**이지 틀린 채로 표시만 지우는 것이 아니다.
+    // 서버가 약어대로 센 값을 이미 알고 있으므로 한 번 눌러 반영할 수 있게 한다.
+    //
+    // 단, 고치기를 제안하는 것은 **숫자가 의심스러울 때뿐**이다.
+    // 약어가 앞 단보다 많은 코를 쓰는 단(formula_uses)은 약어 쪽이 틀렸을 가능성이
+    // 높아서, 그 계산값으로 숫자를 덮으면 틀린 값을 확신에 찬 얼굴로 남기게 된다.
+    function toggleWarningPanel(path) {
+      const existing = document.getElementById("warn-panel");
+      const samePath = existing && existing.dataset.path === path;
+      if (existing) existing.remove();
+      if (samePath) return;
+
+      const step = findStep(path);
+      const v = step && step.validation;
+      if (!v || v.status !== "mismatch") return;
+
+      const row = document.querySelector(`#steps-list [data-step-path="${path}"]`);
+      if (!row) return;
+      const tr = row.closest("tr");
+
+      // 계산값이 믿을 만할 때만 '고치기'를 내민다
+      const canFix = v.reason === "total_stitches"
+                  && Number.isInteger(v.parsed) && v.parsed > 0;
+
+      const panel = document.createElement("tr");
+      panel.id = "warn-panel";
+      panel.dataset.path = path;
+      panel.className = "no-export bg-amber-50";
+      panel.innerHTML = `
+        <td colspan="6" class="py-3 px-4 text-xs text-amber-900 space-y-2">
+          <div class="whitespace-pre-line">${escapeHtml(buildWarningTitle(v))}</div>
+          <div class="flex flex-wrap gap-2 pt-1">
+            ${canFix ? `<button type="button" onclick="resolveStep('${path}', 'fix')"
+                 class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg font-medium">
+                 약어대로 ${v.parsed}코로 고치기</button>` : ""}
+            <button type="button" onclick="resolveStep('${path}', 'keep')"
+                 class="bg-white border border-amber-300 hover:border-amber-500 px-3 py-1.5 rounded-lg font-medium">
+                 적힌 ${escapeHtml(String(v.expected))}코가 맞아요</button>
+            <button type="button" onclick="toggleWarningPanel('${path}')"
+                 class="px-3 py-1.5 text-amber-700 hover:underline">닫기</button>
+          </div>
+        </td>`;
+      tr.after(panel);
+    }
+
+    async function resolveStep(path, how) {
       const step = findStep(path);
       if (!step) return;
-      if (!confirm("이 단의 코수를 직접 확인하셨나요?\n확인 표시를 하면 ⚠️ 가 사라집니다.")) return;
 
-      step.validation_ack = `${step.formula || ""}|${step.total_stitches}`;
-      step.validation = { status: "acknowledged" };
+      if (how === "fix") {
+        const parsed = (step.validation || {}).parsed;
+        if (!Number.isInteger(parsed) || parsed <= 0) return;
+        step.total_stitches = parsed;
+        delete step.validation_ack;      // 값이 바뀌었으니 예전 확인은 무효
+      } else {
+        // 적힌 값이 맞다고 사람이 판단한 경우. 확인 당시의 값을 지문으로 남긴다.
+        step.validation_ack = `${step.formula || ""}|${step.total_stitches}`;
+        step.validation = { status: "acknowledged" };
+      }
+      await saveValidationChoice();
+    }
 
+    async function saveValidationChoice() {
       try {
         const res = await fetch(`${API_BASE}/api/pattern/${currentPatternId}`, {
           method: "PUT",
@@ -597,7 +677,7 @@
         }
         renderPatternCard(currentRootMeta || { data: currentPatternData });
       } catch (err) {
-        alert("확인 표시를 저장하지 못했어요: " + err.message);
+        alert("변경한 내용을 저장하지 못했어요: " + err.message);
       }
     }
 
@@ -762,6 +842,9 @@
       // 값을 자동으로 고치지는 않는다 — 판단은 사용자 몫.
       const warning = (step.validation && step.validation.status === "mismatch")
         ? step.validation : null;
+      // 서버가 총 코수를 고친 단. 값을 바꿨다는 사실을 숨기지 않는다.
+      const autoFixed = (step.validation && step.validation.status === "auto_fixed")
+        ? step.validation : null;
       tr.className = warning
         ? "bg-amber-50/70 hover:bg-amber-50 transition"
         : "hover:bg-slate-50 transition";
@@ -779,9 +862,9 @@
       // (코수 칸에 넣으면 저장할 때 사용자가 입력한 값과 섞인다)
       // 클릭하면 "확인함"으로 표시되어 경고가 사라진다.
       const warnBadge = warning
-        ? `<button type="button" onclick="acknowledgeStep('${path}')"
+        ? `<button type="button" onclick="toggleWarningPanel('${path}')"
                    class="block mx-auto mt-1 text-amber-600 text-xs leading-none hover:scale-125 transition"
-                   title="${buildWarningTitle(warning)}&#10;&#10;확인했다면 눌러서 표시를 없앨 수 있어요.">⚠️</button>`
+                   title="${buildWarningTitle(warning)}&#10;&#10;눌러서 처리 방법을 고르세요.">⚠️</button>`
         : "";
 
       // 단이 시작되는 시점으로 영상 재생. 서버가 검증해 이상한 값은 0으로 지우므로
@@ -799,15 +882,20 @@
 
       tr.innerHTML = `
         <td class="py-3 px-3 text-center">
-          <input type="checkbox" onchange="toggleRowCheck(this)" class="rounded border-slate-300 text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer">
+          <input type="checkbox" data-step-path="${path}"${isStepDone(path) ? " checked" : ""} onchange="toggleRowCheck(this)" class="rounded border-slate-300 text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer">
           ${warnBadge}
         </td>
         <td class="py-3 px-3 text-center font-bold text-slate-700 editable" data-step-path="${path}" data-field="step_name">${rowName}</td>
         <td class="py-3 px-3 text-center whitespace-nowrap">${timeCell}</td>
-        <td class="py-3 px-3 text-center text-slate-600 font-medium editable" data-step-path="${path}" data-field="total_stitches">${stitchCount}</td>
+        <td class="py-3 px-3 text-center text-slate-600 font-medium editable" data-step-path="${path}" data-field="total_stitches">${stitchCount}${
+          autoFixed ? `<span class="ml-0.5 text-[10px] text-slate-400 align-super cursor-help"
+                             title="영상에서 ${autoFixed.was}코로 읽혔지만 도안 약어와 앞 단 코수가 모두 ${autoFixed.expected}코를 가리켜 고쳤어요.">🔧</span>` : ""
+        }</td>
         <td class="py-3 px-3 text-amber-700 font-mono font-medium leading-relaxed whitespace-pre-wrap editable" data-step-path="${path}" data-field="formula">${prettyCode(step.formula) || '-'}</td>
         <td class="py-3 px-3 text-slate-600 leading-relaxed editable" data-step-path="${path}" data-field="instruction">${step.instruction || step.summary || '-'}</td>
       `;
+      // 이미 뜬 단이면 취소선 표시까지 되살린다. 체크만 켜 두면 표가 달라 보인다.
+      if (isStepDone(path)) tr.classList.add("bg-slate-100", "line-through", "opacity-50");
       container.appendChild(tr);
     }
 
@@ -818,6 +906,17 @@
       } else {
         tr.classList.remove("bg-slate-100", "line-through", "opacity-50");
       }
+      // 뜨다 만 자리는 새로고침으로 잃으면 안 된다.
+      rememberChecked(checkbox.dataset.stepPath, checkbox.checked);
+      renderCheckProgress();
+    }
+
+    // 이 정리의 체크를 전부 지운다. 작품을 다 떴거나 처음부터 다시 뜰 때.
+    function clearChecked() {
+      document.querySelectorAll('#steps-list input[type="checkbox"]:checked').forEach(cb => {
+        cb.checked = false;
+        toggleRowCheck(cb);
+      });
     }
 
     // 화면에서 편집한 내용을 currentPatternData에 되쓴다.
@@ -870,7 +969,8 @@
       }
 
       // 3. 단별 상세 (data-step-path 좌표로 원본 step 객체를 찾아 갱신)
-      document.querySelectorAll("#steps-list [data-step-path]").forEach(el => {
+      // [data-field]까지 요구한다 — 체크박스도 같은 좌표를 쓰지만 편집 대상이 아니다.
+      document.querySelectorAll("#steps-list [data-step-path][data-field]").forEach(el => {
         const [partIdx, stepIdx] = el.dataset.stepPath.split(".").map(Number);
         const step = partIdx >= 0
           ? (data.parts && data.parts[partIdx] && data.parts[partIdx].steps || [])[stepIdx]
@@ -1093,6 +1193,59 @@
     }
 
     // ─────────────────────────────────────────────
+    // 뜬 단 체크 (도안별로 localStorage에 남긴다)
+    //
+    // 새로고침하면 뜨다 만 자리를 잃는 것이 실사용에서 가장 아쉬운 지점이었다.
+    // 로그인이 없으므로 서버에 두지 않고 이 브라우저에만 남긴다 — 기기를
+    // 옮기면 따라가지 않지만, 뜨개는 대개 한 자리에서 이어 뜬다.
+    //
+    // 좌표는 편집에 쓰는 data-step-path("파츠인덱스.단인덱스")와 같은 값이다.
+    // 도안을 다시 만들어 단 구성이 바뀌면 체크가 어긋날 수 있지만, 그때는
+    // 사용자가 초기화를 누르면 된다. 어긋난 체크는 잘못된 도안과 달리 해롭지 않다.
+    // ─────────────────────────────────────────────
+    const CHECK_KEY = "knotty_checked";
+    const CHECK_MAX = 20;   // 도안 20건까지. 넘으면 오래된 것부터 버린다
+
+    function loadChecked() {
+      try {
+        const list = JSON.parse(localStorage.getItem(CHECK_KEY) || "[]");
+        return Array.isArray(list) ? list : [];
+      } catch (e) { return []; }   // 저장값이 깨졌으면 조용히 비운다
+    }
+
+    function checkedRows(id) {
+      const hit = loadChecked().find(x => x.id === id);
+      return (hit && Array.isArray(hit.rows)) ? hit.rows : [];
+    }
+
+    // 렌더할 때 이 단이 이미 체크돼 있었는지
+    function isStepDone(path) {
+      if (!currentPatternId) return false;
+      return checkedRows(currentPatternId).includes(path);
+    }
+
+    function rememberChecked(path, done) {
+      if (!currentPatternId || !path) return;
+      const rows = checkedRows(currentPatternId).filter(p => p !== path);
+      if (done) rows.push(path);
+      const list = loadChecked().filter(x => x.id !== currentPatternId);
+      // 하나도 안 남았으면 항목 자체를 지운다. 빈 껍데기를 쌓아 둘 이유가 없다.
+      if (rows.length) list.unshift({ id: currentPatternId, rows });
+      try { localStorage.setItem(CHECK_KEY, JSON.stringify(list.slice(0, CHECK_MAX))); } catch (e) {}
+    }
+
+    // "N단 체크됨 · 초기화". 하나도 없으면 원래 안내 문구로 돌아간다.
+    function renderCheckProgress() {
+      const done = document.querySelectorAll('#steps-list input[type="checkbox"]:checked').length;
+      const progress = document.getElementById("steps-progress");
+      const hint = document.getElementById("steps-hint");
+      if (!progress || !hint) return;
+      document.getElementById("steps-progress-count").innerText = done;
+      progress.classList.toggle("hidden", done === 0);
+      hint.classList.toggle("hidden", done > 0);
+    }
+
+    // ─────────────────────────────────────────────
     // 최근 본 정리 (로그인 없이 localStorage에 id만 쌓는다)
     // ─────────────────────────────────────────────
     const RECENT_KEY = "knotty_recent";
@@ -1108,6 +1261,18 @@
       const list = loadRecent().filter(x => x.id !== id);
       list.unshift({ id, title: title || "제목 없음" });
       try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch (e) {}
+      renderRecent();
+    }
+
+    // 한 건만 지운다. 서버에서 사라진 정리를 발견했을 때 쓴다.
+    function forgetRecent(id) {
+      const list = loadRecent().filter(x => x.id !== id);
+      try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch (e) {}
+      // 체크해 둔 단도 함께 버린다 — 돌아갈 도안이 없다.
+      try {
+        localStorage.setItem(CHECK_KEY,
+          JSON.stringify(loadChecked().filter(x => x.id !== id)));
+      } catch (e) {}
       renderRecent();
     }
 

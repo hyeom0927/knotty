@@ -2,6 +2,8 @@ import os
 import re
 import json
 import time
+import hmac
+import hashlib
 import asyncio
 import urllib.request
 import urllib.parse
@@ -28,6 +30,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "")
+
+# 운영자 전용 기능(수정 이력 조회·되돌리기)의 열쇠.
+# 비워 두면 그 기능은 아예 닫힌다 — 비밀번호 없는 관리 화면보다 없는 편이 낫다.
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
 # 모델은 Pass별로 따로 지정한다.
 # 무료 티어의 호출 한도는 "모델 단위"로 잡히므로, 두 Pass에 다른 모델을 쓰면
@@ -679,6 +685,17 @@ _TOKEN_WITH_COUNT = re.compile(r"^([a-z][a-z0-9_ ]*?)\s+(\d+)$")
 _TOKEN_ALONE = re.compile(r"^([a-z][a-z0-9_ ]*)$")
 # "sc 3 in 1 st" — 한 코에 여러 번 뜨는 표기. 실제 도안에 자주 등장한다.
 _TOKEN_IN_ONE = re.compile(r"^([a-z][a-z0-9_ ]*?)\s+(\d+)\s+in\s+\d+\s*sts?$")
+# "dc 2inc x 12" — 괄호 없이 반복 횟수를 적는 표기.
+# 괄호가 있는 `(…) x N`만 처리하다 보니 이 형태가 전부 해석 실패로 빠졌다.
+_TRAILING_REPEAT = re.compile(r"\s*[x×*]\s*(\d+)\s*$", re.IGNORECASE)
+
+
+def _split_trailing_repeat(token: str):
+    """`dc 2inc x 12` → ("dc 2inc", 12). 반복 표기가 없으면 (원본, 1)"""
+    match = _TRAILING_REPEAT.search(token)
+    if not match:
+        return token, 1
+    return token[:match.start()].strip(), int(match.group(1))
 
 
 def _normalize_code(code: str) -> str:
@@ -686,8 +703,15 @@ def _normalize_code(code: str) -> str:
 
     craft_terms의 standard_code는 `sl_st`인데 도안 표기는 `sl st`라
     정규화하지 않으면 빼뜨기가 들어간 단이 전부 검증에서 빠진다.
+
+    글자와 숫자 사이의 공백도 지운다 — **사전은 `dc2tog`로 붙여 쓰는데
+    AI는 `dc 2tog`로 띄어 쓴다.** 이 한 칸 때문에 늘림·줄임이 들어간 단이
+    통째로 `unknown_term`으로 빠져 검증에서 사라졌다(2026-08-24 수정).
+    개수는 이 함수에 오기 전에 이미 떼어내므로(`dc 11` → `dc`, 11)
+    붙여도 개수와 헷갈릴 일이 없다. 글자 사이의 공백(`sl st`)은 그대로 둔다.
     """
-    return re.sub(r"[\s_]+", " ", (code or "").strip().lower())
+    normalized = re.sub(r"[\s_]+", " ", (code or "").strip().lower())
+    return re.sub(r"(?<=[a-z]) (?=\d)", "", normalized)
 
 
 def _code_to_regex(code: str) -> str:
@@ -761,6 +785,9 @@ def _parse_token(token: str, delta_map: dict):
             return None
         return inner_total * int(repeat_match.group(1))
 
+    # `dc2inc x 12` — 괄호 없이 반복을 적는 표기
+    token, repeat = _split_trailing_repeat(token)
+
     parsed = _parse_plain_token(token)
     if not parsed:
         return None
@@ -768,7 +795,7 @@ def _parse_token(token: str, delta_map: dict):
     code, count = parsed
     if code not in delta_map:
         return None
-    return delta_map[code] * count
+    return delta_map[code] * count * repeat
 
 
 def _parse_sequence(text: str, delta_map: dict, is_row_start: bool = False):
@@ -835,13 +862,14 @@ def _count_consumed(text: str, consume_map: dict):
             total += inner * int(repeat.group(1))
             continue
 
+        token, repeat = _split_trailing_repeat(token)
         parsed = _parse_plain_token(token)
         if not parsed:
             return None
         code, count = parsed
         if code not in consume_map:
             return None
-        total += consume_map[code] * count
+        total += consume_map[code] * count * repeat
 
     return total
 
@@ -869,6 +897,26 @@ def _row_can_change_stitch_count(text: str) -> bool:
     return False
 
 
+def _turning_chain_len(text: str) -> int:
+    """행 맨 앞 기둥사슬의 사슬 수. 기둥사슬이 아니면 0.
+
+    `mr` 같은 선두 토큰은 건너뛰고 본다.
+    """
+    tokens = _split_top_level(text)
+    lead = 0
+    while lead < len(tokens) and _token_code(tokens[lead]) in ("mr", "mc"):
+        lead += 1
+    if lead >= len(tokens):
+        return 0
+    parsed = _parse_plain_token(tokens[lead])
+    if not parsed or parsed[0] != "ch":
+        return 0
+    # 뒤에 뜬 코가 없으면 기초 사슬이지 기둥사슬이 아니다
+    if not tokens[lead + 1:]:
+        return 0
+    return parsed[1]
+
+
 _GROUPED_ROW = re.compile(r"\d+\s*[~\-–]\s*\d+|반복|repeat", re.IGNORECASE)
 
 
@@ -878,7 +926,7 @@ def _is_grouped_row(step: dict) -> bool:
     return bool(_GROUPED_ROW.search(text))
 
 
-def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
+def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> tuple:
     """단별 formula를 파싱해 total_stitches와 대조. 불일치 건수 반환
 
     **경고는 확실할 때만 낸다.** 틀린 경고가 섞이면 맞는 경고까지 무시당하기 때문이다.
@@ -895,9 +943,10 @@ def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
        줄 하나에 여러 단이 들어 있다고 보고 검사하지 않는다.
     """
     if not isinstance(steps, list):
-        return 0
+        return 0, 0
 
     consume_map = consume_map or DEFAULT_STITCH_CONSUME
+    auto_fixed_count = 0
     mismatch_count = 0
     prev_total = None
 
@@ -935,6 +984,38 @@ def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
               and parsed % expected == 0 and parsed // expected >= 2):
             # ② 한 줄에 여러 단이 들어 있다 — 이 줄만으로는 판단할 수 없다
             step["validation"] = {"status": "skipped", "reason": "grouped_row"}
+        elif (expected == parsed + 1 and _turning_chain_len(formula.lower()) >= 2
+              and not (prev_total and consumed is not None and consumed > prev_total)):
+            # ③ 기둥사슬을 코로 세느냐 마느냐 — 딱 1코 차이는 판정하지 않는다.
+            #
+            # 한국 뜨개 관례에서 짧은뜨기 단의 기둥사슬(ch 1)은 코로 세지 않지만,
+            # 한길긴뜨기 단의 기둥사슬(ch 3)은 그 단의 첫 코로 치는 것이 보통이다.
+            # 그런데 **같은 도안 안에서도 두 관례가 섞여 나온다.**
+            #   라쿤 수세미 1단  `mr, ch 3, dc 11` / 총 12코  → 기둥사슬을 셌다
+            #   라쿤 수세미 3단  `ch 3, dc 24`     / 총 24코  → 기둥사슬을 세지 않았다
+            # 한쪽으로 규칙을 강제해 보니 경고가 8건에서 18건으로 늘었다.
+            # 어느 쪽인지 formula만 보고는 알 수 없으므로, 기둥사슬 하나로 설명되는
+            # +1은 두 관례 모두 인정한다. 반대 방향(-1)은 기둥사슬로 설명되지 않으므로
+            # 그대로 경고한다.
+            step["validation"] = {"status": "skipped", "reason": "turning_chain"}
+        elif (parsed != expected and prev_total and consumed is not None
+              and consumed == prev_total and parsed > 0):
+            # ④ 약어가 **양쪽에서** 뒷받침되면 총 코수 쪽이 틀린 것이다 → 서버가 고친다.
+            #
+            #   · 앞 단에서 쓰는 코 == 앞 단의 코수   (약어가 앞 단과 아귀가 맞다)
+            #   · 그 약어대로 뜨면 parsed 코가 남는다
+            # 두 검사가 독립적으로 같은 약어를 지지하는데 total_stitches만 다르다면,
+            # total_stitches는 약어에서 **파생되는 값**이므로 그쪽을 고치는 것이 맞다.
+            #
+            # 이 조건을 벗어나면 자동으로 고치지 않는다. 라쿤 수세미 10단은 앞 단이
+            # 28코인데 약어가 13코만 쓴다 — 약어 자체가 뭉개진 것이라 계산으로 메울 수
+            # 없고, 잘못 메우면 틀린 도안이 확신에 찬 얼굴로 남는다. 그런 단은 경고로
+            # 남겨 사용자에게 묻는다.
+            step["validation"] = {"status": "auto_fixed",
+                                  "was": expected, "expected": parsed}
+            step["total_stitches"] = parsed
+            expected = parsed
+            auto_fixed_count += 1
         elif parsed != expected or (prev_total and consumed is not None
                                     and consumed > prev_total):
             # 생산(남는 코)과 소비(앞 단에서 쓰는 코)를 함께 보면
@@ -975,9 +1056,114 @@ def _validate_steps(steps, delta_map: dict, consume_map: dict = None) -> int:
         # (한 단이 틀렸다고 뒤따르는 멀쩡한 단까지 연쇄로 경고되는 것을 막는다)
         # 사람이 확인한 단은 맞다고 판단된 값이므로 기준선으로 그대로 쓴다.
         status = (step.get("validation") or {}).get("status")
-        prev_total = expected if status in (None, "acknowledged") else None
+        # 사람이 확인한 단과 서버가 고친 단은 믿을 수 있는 값이므로 기준선으로 쓴다.
+        prev_total = expected if status in (None, "acknowledged", "auto_fixed") else None
 
-    return mismatch_count
+    return mismatch_count, auto_fixed_count
+
+
+def _iter_steps(pattern_data: dict):
+    """parts 구조와 구버전 pattern_steps 구조를 가리지 않고 단을 하나씩 내준다."""
+    parts = pattern_data.get("parts")
+    if isinstance(parts, list) and parts:
+        for part in parts:
+            if isinstance(part, dict):
+                for step in (part.get("steps") or []):
+                    if isinstance(step, dict):
+                        yield step
+    else:
+        for step in (pattern_data.get("pattern_steps") or []):
+            if isinstance(step, dict):
+                yield step
+
+
+def canonicalize_formula(pattern_data: dict, catalog: list = None) -> dict:
+    """`formula`의 약어를 사전(craft_terms)에 적힌 표기 그대로 되돌린다.
+
+    **왜 필요한가** — Pass 2 프롬프트의 "약어와 숫자 사이는 띄운다"는 규칙을
+    모델이 약어 안쪽에까지 적용해 `dc2tog`를 `dc 2tog`로 띄워 썼다.
+    뜨개 표기법에서 `dc2tog`(한길긴뜨기 2코 모아뜨기)는 붙여 쓰는 것이 표준이고
+    사전도 그렇게 갖고 있으므로, **띄어 쓴 쪽이 틀린 표기**다.
+    화면에도 그대로 나가고, 사전에 없는 약어가 되어 그 단은 코수 검증에서 통째로 빠졌다.
+    (라쿤 수세미: 약어가 있는 12단 중 7단이 검증되지 않았다)
+
+    프롬프트는 고쳤지만 모델이 규칙을 어길 때 조용히 재발하므로
+    `graft_pass1_timestamps()`와 같은 이유로 서버가 한 번 더 보정한다.
+
+    **없는 기법을 지어내지는 않는다.** 사전에 있는 코드로 정규화했을 때
+    똑같아지는 것만 사전 표기로 바꾼다. 정말 모르는 기법은 그대로 두어
+    `unknown_terms`와 검증의 `skipped`가 제 역할을 하게 둔다.
+    """
+    if not isinstance(pattern_data, dict):
+        return pattern_data
+
+    # 표기의 근거는 사전이다. 사전을 못 읽었으면(테이블 미구성·조회 실패)
+    # 무엇이 옳은 표기인지 알 수 없으므로 원문을 그대로 둔다.
+    if not catalog:
+        return pattern_data
+
+    # 정규화한 코드 → 사전에 적힌 원래 표기
+    canonical = {}
+    for term in (catalog or []):
+        code = (term.get("standard_code") or "").strip()
+        if code:
+            canonical.setdefault(_normalize_code(code), code)
+    for code in DEFAULT_STITCH_DELTA:
+        canonical.setdefault(_normalize_code(code), code)
+
+    fixed = []
+
+    def fix_token(token: str) -> str:
+        """토큰 하나의 약어 부분만 사전 표기로 바꾼다. 코 수·반복 횟수는 그대로 둔다."""
+        body, repeat = _split_trailing_repeat(token.strip())
+        match = _TOKEN_WITH_COUNT.match(body.lower())
+        if match:                                  # `dc 2tog 3`
+            written, count = body[:match.end(1)].strip(), match.group(2)
+        elif _TOKEN_ALONE.match(body.lower()):     # `dc 2tog`
+            written, count = body.strip(), None
+        else:
+            return token                           # `sc 3 in 1 st` 등은 손대지 않는다
+
+        target = canonical.get(_normalize_code(written))
+        if not target or target == written:
+            return token
+
+        fixed.append(f"{written} → {target}")
+        rebuilt = f"{target} {count}" if count else target
+        return f"{rebuilt} x {repeat}" if repeat > 1 else rebuilt
+
+    def fix_text(text: str) -> str:
+        out = []
+        for token in _split_top_level(text):
+            token = token.strip()
+            if token.startswith("("):
+                depth, close = 0, -1
+                for i, ch in enumerate(token):
+                    if ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            close = i
+                            break
+                if close == -1:
+                    out.append(token)
+                    continue
+                out.append(f"({fix_text(token[1:close])}){token[close + 1:]}")
+            else:
+                out.append(fix_token(token))
+        return ", ".join(out)
+
+    for step in _iter_steps(pattern_data):
+        formula = step.get("formula")
+        if isinstance(formula, str) and formula.strip():
+            step["formula"] = fix_text(formula)
+
+    if fixed:
+        seen = sorted(set(fixed))
+        print(f"✏️ 약어 표기 보정 {len(fixed)}건: {', '.join(seen[:8])}")
+
+    return pattern_data
 
 
 def validate_stitch_counts(pattern_data: dict, catalog: list = None) -> dict:
@@ -996,20 +1182,125 @@ def validate_stitch_counts(pattern_data: dict, catalog: list = None) -> dict:
         if code and isinstance(delta, int) and not isinstance(delta, bool):
             delta_map[code] = delta
 
-    mismatch_count = 0
+    mismatch_count = auto_fixed = 0
     parts = pattern_data.get("parts")
     if isinstance(parts, list) and parts:
         for part in parts:
             if isinstance(part, dict):
-                mismatch_count += _validate_steps(part.get("steps"), delta_map)
+                m, a = _validate_steps(part.get("steps"), delta_map)
+                mismatch_count += m
+                auto_fixed += a
     else:
-        mismatch_count += _validate_steps(pattern_data.get("pattern_steps"), delta_map)
+        m, a = _validate_steps(pattern_data.get("pattern_steps"), delta_map)
+        mismatch_count += m
+        auto_fixed += a
 
-    pattern_data["validation_summary"] = {"mismatch_count": mismatch_count}
+    pattern_data["validation_summary"] = {
+        "mismatch_count": mismatch_count, "auto_fixed_count": auto_fixed
+    }
+    if auto_fixed:
+        print(f"🔧 총 코수 자동 보정 {auto_fixed}건 (약어가 앞 단·결과 양쪽에서 맞아떨어진 단)")
     if mismatch_count:
-        print(f"⚠️ 코수 불일치 {mismatch_count}건 감지")
+        print(f"⚠️ 코수 불일치 {mismatch_count}건 감지 — 사용자 확인 필요")
 
     return pattern_data
+
+
+# ------------------------------------------
+# 3-3. 수정 이력
+# ------------------------------------------
+# 사용자의 수정은 즉시 반영한다. 승인을 기다리게 하면 오탈자 하나 고치는 데도
+# 운영자를 거쳐야 해서 결국 아무도 고치지 않는다. 대신 **무엇이 어떻게 바뀌었는지**를
+# 남겨 운영자가 나중에 훑어보고 되돌릴 수 있게 한다.
+#
+# 표가 없거나 기록에 실패해도 저장 자체는 막지 않는다 — `record_unknown_terms`와 같다.
+# 이력을 남기지 못했다고 사용자의 수정을 되돌리는 것은 벌을 잘못 주는 것이다.
+
+# 검증 결과는 저장할 때마다 서버가 다시 계산한다. 사람이 고친 것이 아니므로
+# 요약에서 뺀다. 넣으면 "바뀐 것 없음"인 저장도 변경으로 잡혀 이력이 소음이 된다.
+_REVISION_IGNORED = {"validation", "validation_summary", "validation_ack"}
+
+
+def _diff_pattern(before: dict, after: dict, limit: int = 40) -> list:
+    """두 도안 본문의 차이를 사람이 읽을 수 있는 줄로 만든다."""
+    lines = []
+
+    def note(label, old, new):
+        if len(lines) < limit and old != new:
+            lines.append(f"{label}: {_short(old)} → {_short(new)}")
+
+    def _short(v, n=60):
+        text = "(없음)" if v in (None, "", []) else str(v)
+        return text if len(text) <= n else text[:n] + "…"
+
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return lines
+
+    note("작품명", before.get("pattern_title"), after.get("pattern_title"))
+
+    mb = before.get("materials") or {}
+    ma = after.get("materials") or {}
+    if isinstance(mb, dict) and isinstance(ma, dict):
+        for key in ("yarn", "needle", "accessories", "total_rows"):
+            note(f"준비물·{key}", mb.get(key), ma.get(key))
+
+    # 단은 (파츠 순서, 단 순서)로 짝지어 본다. 순서가 바뀌면 그건 그것대로 드러난다.
+    steps_b = list(_iter_steps(before))
+    steps_a = list(_iter_steps(after))
+    if len(steps_b) != len(steps_a):
+        lines.append(f"단 개수: {len(steps_b)} → {len(steps_a)}")
+
+    for idx, (sb, sa) in enumerate(zip(steps_b, steps_a)):
+        name = sa.get("step_name") or sb.get("step_name") or f"{idx + 1}번째 단"
+        for key in ("step_name", "formula", "total_stitches", "instruction"):
+            if key in _REVISION_IGNORED:
+                continue
+            note(f"[{name}] {key}", sb.get(key), sa.get(key))
+
+    return lines
+
+
+def record_revision(pattern_id: str, before: dict, after: dict, request: Request = None):
+    """수정 전후를 이력 표에 남긴다. 실패해도 저장을 막지 않는다."""
+    try:
+        changes = _diff_pattern(before or {}, after or {})
+        if not changes:
+            return   # 검증 값만 다시 계산된 저장 — 남길 것이 없다
+
+        editor_hash = None
+        if request is not None:
+            ip = client_ip(request)
+            if ip:
+                editor_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()[:16]
+
+        supabase.table("pattern_revisions").insert({
+            "pattern_id": pattern_id,
+            "before": before,
+            "after": after,
+            "summary": "\n".join(changes),
+            "change_count": len(changes),
+            "editor_hash": editor_hash,
+        }).execute()
+        print(f"🗂️ 수정 이력 {len(changes)}건 기록: {pattern_id}")
+    except Exception as e:
+        # 표가 아직 없을 수 있다 (docs/pattern_revisions.sql 미적용)
+        print(f"🗂️ 수정 이력을 남기지 못했습니다 (저장은 정상): {e}")
+
+
+def require_admin(request: Request):
+    """운영자 전용 엔드포인트의 문지기.
+
+    `ADMIN_TOKEN`을 정하지 않았으면 기능 자체를 닫는다.
+    비밀번호 없는 관리 화면을 열어 두는 것보다 없는 편이 낫다.
+    """
+    if not ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="운영자 기능이 꺼져 있습니다. ADMIN_TOKEN 환경변수를 설정하세요."
+        )
+    token = request.headers.get("x-admin-token") or ""
+    if not hmac.compare_digest(token, ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="운영자 토큰이 올바르지 않습니다.")
 
 
 # ------------------------------------------
@@ -2059,6 +2350,8 @@ async def generate_pattern(req: PatternRequest, request: Request):
         pattern_data = enrich_yarn_from_specs(pattern_data)
         # 시각의 출처는 자막뿐이고 자막을 보는 건 Pass 1뿐이다. Pass 2가 흘렸으면 여기서 되살린다.
         pattern_data = graft_pass1_timestamps(pattern_data, intermediate_json_str)
+        # 검증보다 먼저 — 약어 표기가 사전과 어긋나면 그 단은 검증에서 통째로 빠진다
+        pattern_data = canonicalize_formula(pattern_data, catalog)
         # 원작자에게 트래픽을 되돌려 주는 링크. AI가 지어낼 수 없도록 설명란에서 직접 뽑는다.
         shop_links = extract_shop_links(meta_info.get("description") or "")
         creator_record = remember_creator_shop(creator_id, creator_record, shop_links)
@@ -2322,6 +2615,72 @@ async def get_pattern_by_id(pattern_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/admin/revisions")
+async def list_revisions(request: Request, pattern_id: str = None,
+                         limit: int = 30, only_unreverted: bool = False):
+    """수정 이력을 최신순으로 훑는다. 운영자 전용.
+
+    본문(before/after)은 싣지 않는다 — 훑어보는 화면에 도안 전체를 실으면
+    응답이 수 MB가 되고, 정작 봐야 할 요약이 파묻힌다. 되돌릴 때만 꺼내 쓴다.
+    """
+    require_admin(request)
+    try:
+        query = (supabase.table("pattern_revisions")
+                 .select("id, pattern_id, summary, change_count, editor_hash, reverted_at, created_at")
+                 .order("created_at", desc=True)
+                 .limit(max(1, min(limit, 100))))
+        if pattern_id:
+            query = query.eq("pattern_id", pattern_id)
+        if only_unreverted:
+            query = query.is_("reverted_at", "null")
+        res = query.execute()
+        return {"status": "success", "items": res.data or []}
+    except Exception as e:
+        print(f"❌ Error in GET /api/admin/revisions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/revisions/{revision_id}/revert")
+async def revert_revision(revision_id: str, request: Request):
+    """이 수정을 되돌린다 — 수정 **직전**의 본문을 그대로 되쓴다.
+
+    되돌리기 자체도 하나의 수정이므로 이력에 다시 남는다.
+    그래야 "되돌린 것을 다시 되돌리기"가 가능하고, 기록에 구멍이 생기지 않는다.
+    """
+    require_admin(request)
+    try:
+        found = (supabase.table("pattern_revisions")
+                 .select("id, pattern_id, before, reverted_at")
+                 .eq("id", revision_id).execute())
+        if not found.data:
+            raise HTTPException(status_code=404, detail="해당 수정 이력을 찾을 수 없습니다.")
+
+        revision = found.data[0]
+        if revision.get("reverted_at"):
+            raise HTTPException(status_code=409, detail="이미 되돌린 수정입니다.")
+
+        pattern_id = revision["pattern_id"]
+        target = revision.get("before") or {}
+
+        stored = supabase.table("patterns").select("pattern_data").eq("id", pattern_id).execute()
+        if not stored.data:
+            raise HTTPException(status_code=404, detail="도안이 이미 삭제되었습니다.")
+        current = stored.data[0].get("pattern_data") or {}
+
+        supabase.table("patterns").update({"pattern_data": target}).eq("id", pattern_id).execute()
+        supabase.table("pattern_revisions").update(
+            {"reverted_at": "now()"}).eq("id", revision_id).execute()
+        record_revision(pattern_id, current, target, request)
+
+        print(f"↩️ 수정 되돌림: {pattern_id} (revision {revision_id})")
+        return {"status": "success", "pattern_id": pattern_id, "data": target}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in POST /api/admin/revisions/revert: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.put("/api/pattern/{pattern_id}")
 async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Request):
     # ⚠️ 아직 인증이 없다. pattern_id만 알면 누구나 덮어쓸 수 있으므로
@@ -2346,7 +2705,9 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Re
         sanitized_data = enrich_yarn_from_specs(sanitized_data)
         sanitized_data = validate_timestamps(sanitized_data, 0)
         # 사용자가 코수를 고쳤을 수 있으므로 저장 시점에 다시 검증한다
-        sanitized_data = validate_stitch_counts(sanitized_data, get_craft_terms_catalog())
+        edit_catalog = get_craft_terms_catalog()
+        sanitized_data = canonicalize_formula(sanitized_data, edit_catalog)
+        sanitized_data = validate_stitch_counts(sanitized_data, edit_catalog)
 
         res = supabase.table("patterns").update({
             "pattern_data": sanitized_data
@@ -2354,6 +2715,9 @@ async def update_pattern(pattern_id: str, req: PatternUpdateRequest, request: Re
 
         if not res.data or len(res.data) == 0:
             raise HTTPException(status_code=404, detail="업데이트할 도안을 찾을 수 없습니다.")
+
+        # 무엇이 바뀌었는지 남긴다. 저장은 이미 끝났고, 실패해도 되돌리지 않는다.
+        record_revision(pattern_id, previous, sanitized_data, request)
 
         print(f"📝 [Updated] ID: {pattern_id}")
         return {
