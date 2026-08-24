@@ -272,8 +272,9 @@
           </span>
         </div>
 
-        <!-- 신고. 도안 수십 건 규모에서는 표 하나면 충분하다. -->
-        <div class="text-center pt-1">
+        <!-- 신고. 도안 수십 건 규모에서는 표 하나면 충분하다.
+             no-export: PNG·PDF로 내보낼 때는 숨긴다. 종이에 찍힌 버튼은 누를 수 없다. -->
+        <div class="text-center pt-1 no-export">
           <button onclick="reportPattern()" class="text-[11px] text-slate-400 hover:text-rose-600 transition">
             🚨 이 정리 이상해요
           </button>
@@ -958,9 +959,21 @@
       return `${safeChannel}_${safeTitle}.${ext}`;
     }
 
+    // 화면에서만 쓰는 요소(신고 버튼 등)를 내보내는 동안 잠시 숨긴다.
+    // 그림·PDF에 찍힌 버튼은 누를 수 없어 자리만 차지한다.
+    async function withoutScreenOnly(job) {
+      const hidden = document.querySelectorAll("#pattern-card .no-export");
+      hidden.forEach(el => (el.style.display = "none"));
+      try {
+        return await job();
+      } finally {
+        hidden.forEach(el => (el.style.display = ""));
+      }
+    }
+
     async function downloadPNG() {
       const card = document.getElementById("pattern-card");
-      const canvas = await html2canvas(card, { scale: 2, useCORS: true });
+      const canvas = await withoutScreenOnly(() => html2canvas(card, { scale: 2, useCORS: true }));
       const link = document.createElement("a");
       link.download = getExportFileName("png");
       link.href = canvas.toDataURL("image/png");
@@ -985,7 +998,7 @@
       };
 
       try {
-        await html2pdf().set(opt).from(card).save();
+        await withoutScreenOnly(() => html2pdf().set(opt).from(card).save());
       } catch (err) {
         console.error("PDF 생성 에러:", err);
         alert("PDF 생성 중 오류가 발생했습니다.");

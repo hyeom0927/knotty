@@ -185,3 +185,16 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 우선순위별 작업 계획 |
 | [docs/DATA_MODEL.md](docs/DATA_MODEL.md) | DB 스키마, 도안 JSON 구조, 기법 테이블·코수 검증 규칙 |
 | [docs/POSITIONING.md](docs/POSITIONING.md) | 저작권 원칙, 카피 가이드, 수익화 방향, 경쟁사 분석 프레임 |
+| [docs/SYMBOLS.md](docs/SYMBOLS.md) | 도안 기호 SVG를 그리는 규칙 (`symbols/generate.py`로 재생성) |
+
+### Supabase에 적용하는 SQL
+
+| 파일 | 내용 | 상태 |
+|---|---|:---:|
+| [docs/schema_migration.sql](docs/schema_migration.sql) | `patterns`·`creators` 컬럼 확장, `craft_terms_pending`, `reports` | ✅ 적용됨 |
+| [docs/craft_terms_seed.sql](docs/craft_terms_seed.sql) | 기법 사전 생성 + 시드 36건 (⚠️ 테이블을 DROP 합니다) | ✅ 적용됨 |
+| [docs/craft_terms_update.sql](docs/craft_terms_update.sql) | 기법 사전 값 동기화 (여러 번 실행해도 안전) | ✅ 적용됨 |
+| [docs/yarn_specs.sql](docs/yarn_specs.sql) | 실 사전 (굵기·권장 바늘·라벨 게이지) | ⬜ **미적용** |
+
+> `video_url`(기법 영상 링크)을 직접 채우신 뒤에는 `craft_terms_seed.sql`을 **다시 실행하지 마세요.**
+> 맨 앞에서 테이블을 DROP 하므로 링크가 전부 사라집니다. 값 갱신은 `craft_terms_update.sql`을 쓰세요.
