@@ -108,6 +108,7 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 | `RATE_LIMIT_PER_IP_HOUR` | ⬜ | `5` | IP당 시간당 도안 생성 횟수. `0` = 무제한 |
 | `RATE_LIMIT_PER_IP_DAY` | ⬜ | `20` | IP당 일일 생성 횟수 |
 | `RATE_LIMIT_GLOBAL_DAY` | ⬜ | `100` | **전체 일일 상한 = 비용의 천장.** 무슨 일이 있어도 하루에 이 횟수 이상 AI를 부르지 않음 |
+| `ADMIN_TOKEN` | ⬜ | — | 수정 이력 조회·되돌리기의 열쇠. 비워 두면 그 기능이 닫힘 |
 
 #### 호출량 제한에 대하여
 
@@ -156,11 +157,16 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 |---|---|---|
 | `POST` | `/api/generate` | `{"youtube_url": "..."}` → 도안 생성. 동일 URL이 이미 있으면 DB 캐시를 즉시 반환 |
 | `GET` | `/api/pattern/{id}` | 저장된 도안 단건 조회 (`?id=` 공유 링크가 이걸 씁니다) |
-| `PUT` | `/api/pattern/{id}` | 사용자가 수정한 도안 저장 |
+| `PUT` | `/api/pattern/{id}` | 사용자가 수정한 도안 저장. **수정 전후를 `pattern_revisions`에 남긴다** |
 | `GET` | `/api/patterns` | 목록. `?sort=recent\|popular&page=&size=&q=` (본문은 빼고 카드용 정보만) |
 | `GET` | `/api/craft-terms` | 용어사전용 기법 전체 목록 |
 | `POST` | `/api/reports` | `{"pattern_id", "message", "step_ref"}` → 오류 신고 |
 | `GET` | `/api/health` | 모델·환경변수·호출량 소진 확인 |
+| `GET` | `/api/admin/revisions` | **운영자 전용.** 수정 이력 최신순 (`?pattern_id=&limit=&only_unreverted=`) |
+| `POST` | `/api/admin/revisions/{id}/revert` | **운영자 전용.** 그 수정의 직전 상태로 되돌림 |
+
+운영자 전용 엔드포인트는 `X-Admin-Token` 헤더를 요구합니다.
+`ADMIN_TOKEN`을 정하지 않으면 **기능 자체가 닫힙니다** — 비밀번호 없는 관리 화면을 열어 두는 것보다 없는 편이 낫습니다.
 
 응답에는 `pattern_data`(도안 본문), `craft_terms`(사용된 기법 목록), `creators`(채널 정보)가 함께 담깁니다.
 데이터 구조와 DB 스키마는 [docs/DATA_MODEL.md](docs/DATA_MODEL.md)를 참고하세요.
@@ -195,6 +201,7 @@ python3 -m http.server 5500   # 이후 http://localhost:5500/index.html
 | [docs/craft_terms_seed.sql](docs/craft_terms_seed.sql) | 기법 사전 생성 + 시드 36건 (⚠️ 테이블을 DROP 합니다) | ✅ 적용됨 |
 | [docs/craft_terms_update.sql](docs/craft_terms_update.sql) | 기법 사전 값 동기화 (여러 번 실행해도 안전) | ✅ 적용됨 |
 | [docs/yarn_specs.sql](docs/yarn_specs.sql) | 실 사전 (굵기·권장 바늘·라벨 게이지) | ⬜ **미적용** |
+| [docs/pattern_revisions.sql](docs/pattern_revisions.sql) | 도안 수정 이력 (되돌리기용 전후 스냅샷) | ⬜ **미적용** |
 
 > `video_url`(기법 영상 링크)을 직접 채우신 뒤에는 `craft_terms_seed.sql`을 **다시 실행하지 마세요.**
 > 맨 앞에서 테이블을 DROP 하므로 링크가 전부 사라집니다. 값 갱신은 `craft_terms_update.sql`을 쓰세요.
