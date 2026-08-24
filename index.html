@@ -96,6 +96,12 @@
         <h2 class="text-lg font-bold text-slate-900">뜨개 용어사전</h2>
         <p class="text-xs text-slate-500 mt-1">Knotty가 도안을 정리할 때 쓰는 기법 사전 그대로입니다.</p>
       </div>
+      <div class="flex flex-wrap items-center gap-1 text-xs font-semibold" id="glossary-filters">
+        <button data-filter="all" class="px-3 py-1.5 rounded-lg transition">전체</button>
+        <button data-filter="crochet" class="px-3 py-1.5 rounded-lg transition">코바늘</button>
+        <button data-filter="knitting" class="px-3 py-1.5 rounded-lg transition">대바늘</button>
+        <button data-filter="technique" class="px-3 py-1.5 rounded-lg transition">뜨개 용어</button>
+      </div>
       <input type="text" id="glossary-search" placeholder="약어나 한국어 이름으로 검색 (예: sc, 짧은뜨기)"
              class="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm">
       <div class="overflow-x-auto">
@@ -266,8 +272,9 @@
           </span>
         </div>
 
-        <!-- 신고. 도안 수십 건 규모에서는 표 하나면 충분하다. -->
-        <div class="text-center pt-1">
+        <!-- 신고. 도안 수십 건 규모에서는 표 하나면 충분하다.
+             no-export: PNG·PDF로 내보낼 때는 숨긴다. 종이에 찍힌 버튼은 누를 수 없다. -->
+        <div class="text-center pt-1 no-export">
           <button onclick="reportPattern()" class="text-[11px] text-slate-400 hover:text-rose-600 transition">
             🚨 이 정리 이상해요
           </button>
@@ -306,6 +313,9 @@
       document.getElementById("glossary-search").addEventListener("input", () => {
         clearTimeout(glossaryTimer);
         glossaryTimer = setTimeout(renderGlossary, 150);   // 이미 받아둔 목록이라 즉시 거른다
+      });
+      document.querySelectorAll("#glossary-filters button").forEach(btn => {
+        btn.addEventListener("click", () => setGlossaryFilter(btn.dataset.filter));
       });
 
       const urlParams = new URLSearchParams(window.location.search);
@@ -949,9 +959,21 @@
       return `${safeChannel}_${safeTitle}.${ext}`;
     }
 
+    // 화면에서만 쓰는 요소(신고 버튼 등)를 내보내는 동안 잠시 숨긴다.
+    // 그림·PDF에 찍힌 버튼은 누를 수 없어 자리만 차지한다.
+    async function withoutScreenOnly(job) {
+      const hidden = document.querySelectorAll("#pattern-card .no-export");
+      hidden.forEach(el => (el.style.display = "none"));
+      try {
+        return await job();
+      } finally {
+        hidden.forEach(el => (el.style.display = ""));
+      }
+    }
+
     async function downloadPNG() {
       const card = document.getElementById("pattern-card");
-      const canvas = await html2canvas(card, { scale: 2, useCORS: true });
+      const canvas = await withoutScreenOnly(() => html2canvas(card, { scale: 2, useCORS: true }));
       const link = document.createElement("a");
       link.download = getExportFileName("png");
       link.href = canvas.toDataURL("image/png");
@@ -976,7 +998,7 @@
       };
 
       try {
-        await html2pdf().set(opt).from(card).save();
+        await withoutScreenOnly(() => html2pdf().set(opt).from(card).save());
       } catch (err) {
         console.error("PDF 생성 에러:", err);
         alert("PDF 생성 중 오류가 발생했습니다.");
@@ -1240,14 +1262,48 @@
       renderGlossary();
     }
 
+    let glossaryFilter = "all";
+
+    function setGlossaryFilter(kind) {
+      glossaryFilter = kind;
+      renderGlossary();
+    }
+
     function renderGlossary() {
       const q = document.getElementById("glossary-search").value.trim().toLowerCase();
-      const rows = (glossaryCache || []).filter(t =>
-        !q || `${t.standard_code} ${t.kr_name} ${t.description || ""}`.toLowerCase().includes(q));
+
+      document.querySelectorAll("#glossary-filters button").forEach(btn => {
+        btn.className = btn.dataset.filter === glossaryFilter
+          ? "px-3 py-1.5 rounded-lg bg-amber-600 text-white transition"
+          : "px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition";
+      });
+
+      const rows = (glossaryCache || []).filter(t => {
+        // '뜨개 용어'는 formula에 쓰이지 않는 항목이라 바늘 종류와는 다른 축이다.
+        // (배색·돗바늘 마무리처럼 코수를 만들지 않는 것들)
+        if (glossaryFilter === "technique" && t.entry_type === "stitch") return false;
+        if (glossaryFilter === "crochet" && t.craft_type !== "crochet") return false;
+        if (glossaryFilter === "knitting" && t.craft_type !== "knitting") return false;
+        return !q || `${t.standard_code} ${t.kr_name} ${t.description || ""}`.toLowerCase().includes(q);
+      });
 
       const body = document.getElementById("glossary-list");
       body.innerHTML = "";
+
+      let lastGroup = null;
       rows.forEach(t => {
+        // 무리가 바뀔 때마다 머리글을 넣는다. 순서 자체가 배우는 순서라
+        // 어디까지가 '기본 뜨기'인지 눈에 보여야 뜻이 산다.
+        if (t.group_label && t.group_label !== lastGroup) {
+          lastGroup = t.group_label;
+          const head = document.createElement("tr");
+          head.className = "bg-slate-50/80";
+          head.innerHTML = `<td colspan="5" class="py-1.5 px-3 text-[11px] font-bold text-slate-500 tracking-wide">
+                              ${escapeHtml(lastGroup)}
+                            </td>`;
+          body.appendChild(head);
+        }
+
         const tr = document.createElement("tr");
         tr.className = "hover:bg-slate-50 transition align-top";
         const symbol = t.thumbnail_url
@@ -1259,8 +1315,7 @@
                 class="text-red-600 hover:text-red-700 transition" title="기법 영상 보기">
                <svg class="w-5 h-5 fill-current mx-auto" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></a>`
           : `<span class="text-slate-300">-</span>`;
-        // 대바늘/코바늘, 그리고 formula에 쓰이지 않는 '용어'인지 구분해 준다
-        const tags = [t.craft_type === "knit" ? "대바늘" : "코바늘"];
+        const tags = [t.craft_type === "knitting" ? "대바늘" : "코바늘"];
         if (t.entry_type !== "stitch") tags.push("용어");
         tr.innerHTML = `
           <td class="py-2.5 px-3 text-center">${symbol}</td>
@@ -1278,7 +1333,7 @@
         body.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-sm text-slate-400">찾는 기법이 없어요.</td></tr>`;
       }
       document.getElementById("glossary-count").innerText =
-        `${rows.length}개${q ? ` (전체 ${glossaryCache.length}개 중)` : ""}`;
+        `${rows.length}개${(q || glossaryFilter !== "all") ? ` (전체 ${glossaryCache.length}개 중)` : ""}`;
     }
   </script>
 </body>

@@ -2203,15 +2203,63 @@ async def list_patterns(sort: str = "recent", page: int = 1, size: int = 12, q: 
         raise HTTPException(status_code=500, detail="목록을 불러오지 못했어요.")
 
 
+# 한국 뜨개 책·기호표가 기법을 늘어놓는 순서를 그대로 따른다.
+# 알파벳순이나 등록순으로 늘어놓으면 배우는 사람에게 아무 의미가 없다.
+#
+#   ① 기초      — 시작하고 마무리하는 법 (사슬뜨기·매직링·돗바늘 마무리)
+#   ② 기본 뜨기 — **기둥 높이 순**. 빼뜨기(0) → 짧은뜨기 → 긴뜨기 → 한길 → 두길 → 세길
+#   ③ 늘리기 / ④ 줄이기 — 밑바탕이 되는 기법의 높이 순으로
+#   ⑤ 무늬·응용 — 이랑뜨기 → 걸어뜨기 → 입체무늬 → 가장자리
+#   ⑥ 대바늘    — 코잡기 → 겉·안뜨기 → 늘림 → 줄임
+_TERM_GROUPS = [
+    ("basic",     "기초",       ["ch", "mr", "ring_base", "oval_base", "sew_finish", "color_change"]),
+    ("stitch",    "기본 뜨기",   ["sl_st", "sc", "hdc", "dc", "tr", "dtr"]),
+    ("increase",  "늘리기",      ["inc", "sc3inc", "hdc2inc", "dc2inc", "tr3inc"]),
+    ("decrease",  "줄이기",      ["dec", "sc3tog", "dc2tog", "dc3tog", "dc4tog"]),
+    ("texture",   "무늬 · 응용", ["flo", "blo", "fpdc", "bpdc", "puff", "bobble", "popcorn", "crab"]),
+    ("knitting",  "대바늘",      ["co", "k", "p", "yo", "k2tog", "ssk"]),
+]
+
+_TERM_POSITION = {
+    code: (gi, ci, key, label)
+    for gi, (key, label, codes) in enumerate(_TERM_GROUPS)
+    for ci, code in enumerate(codes)
+}
+
+
+def term_sort_key(term: dict):
+    """사전 순서. 목록에 없는 기법은 제 무리의 맨 뒤로 보낸다.
+
+    새 기법이 추가돼도 화면이 깨지지 않게, 모르는 코드는 버리지 않고 뒤에 붙인다.
+    """
+    code = (term.get("standard_code") or "").lower()
+    found = _TERM_POSITION.get(code)
+    if found:
+        return (found[0], found[1], code)
+    # 아직 자리를 정하지 않은 기법 — 대바늘이면 대바늘 무리 뒤, 아니면 전체 뒤
+    fallback = len(_TERM_GROUPS) - 1 if term.get("craft_type") == "knitting" else len(_TERM_GROUPS)
+    return (fallback, 999, code)
+
+
+def term_group(term: dict):
+    code = (term.get("standard_code") or "").lower()
+    found = _TERM_POSITION.get(code)
+    if found:
+        return found[2], found[3]
+    return ("etc", "그 밖의 기법")
+
+
 @app.get("/api/craft-terms")
 async def list_craft_terms():
     """용어사전. 기법 표를 그대로 보여준다.
 
     도안이 이미 이 표를 기준으로 만들어지므로, 사전 화면은 같은 데이터를 다르게 보여주는 것뿐이다.
     """
-    catalog = get_craft_terms_catalog()
-    terms = [
-        {
+    catalog = sorted(get_craft_terms_catalog(), key=term_sort_key)
+    terms = []
+    for t in catalog:
+        group_key, group_label = term_group(t)
+        terms.append({
             "standard_code": t.get("standard_code"),
             "kr_name": t.get("kr_name"),
             "craft_type": t.get("craft_type"),
@@ -2220,10 +2268,9 @@ async def list_craft_terms():
             "video_url": t.get("video_url"),
             "thumbnail_url": t.get("thumbnail_url"),
             "stitch_delta": t.get("stitch_delta"),
-        }
-        for t in catalog
-    ]
-    terms.sort(key=lambda t: (t.get("craft_type") or "", t.get("entry_type") or "", t.get("standard_code") or ""))
+            "group": group_key,
+            "group_label": group_label,
+        })
     return {"status": "success", "items": terms, "total": len(terms)}
 
 
